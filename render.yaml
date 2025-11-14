@@ -1,0 +1,33 @@
+# Render Infrastructure as Code
+# This config deploys the Node.js API from the correct subfolder.
+
+services:
+  - type: web
+    name: leo-victory-api
+    env: node
+    rootDir: project
+    buildCommand: npm install
+    startCommand: node server/index.js
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: API_BASE_URL
+        value: https://leohol.onrender.com
+      # For Cloud Run migration: keep MONGODB_URI in secret manager, not committed here.
+      - key: ICREDIT_FORCE_TEST
+        value: "1"
+      - key: ICREDIT_TRANSPORT
+        value: json
+      # Additional service-specific env vars can be added in Render dashboard.
+
+# If you also want to deploy the Vite frontend on Render (optional), you could add
+# another service of type "static" pointing at the same rootDir and publish the "dist" folder
+# after running "npm run build". Example (commented out):
+#  - type: web
+#    name: leo-victory-web
+#    env: static
+#    rootDir: project
+#    buildCommand: npm ci && npm run build
+#    staticPublishPath: dist
