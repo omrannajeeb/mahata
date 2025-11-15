@@ -106,8 +106,15 @@ export const validateCoupon = async (req, res) => {
 
     if (hasProductRestrictions || hasCategoryRestrictions) {
       const items = Array.isArray(itemsRaw) ? itemsRaw : [];
+      const readableCategoryNames = hasCategoryRestrictions && Array.isArray(coupon.categories)
+        ? coupon.categories.map(c => c?.name).filter(Boolean)
+        : [];
       if (items.length === 0) {
-        return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Coupon applies only to specific items. Please add eligible products to your cart.' });
+        return res.status(StatusCodes.BAD_REQUEST).json({
+          message: readableCategoryNames.length
+            ? `Coupon is restricted. Valid only for categories: ${readableCategoryNames.join(', ')}`
+            : 'Coupon applies only to specific items. Please add eligible products to your cart.'
+        });
       }
 
       // Normalize and pick product ids from client cart payload
@@ -150,7 +157,11 @@ export const validateCoupon = async (req, res) => {
       }
 
       if (eligibleSubtotal <= 0) {
-        return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Coupon is not applicable to the items in your cart' });
+        return res.status(StatusCodes.BAD_REQUEST).json({
+          message: readableCategoryNames.length
+            ? `Coupon not applicable. It is valid only for categories: ${readableCategoryNames.join(', ')}`
+            : 'Coupon is not applicable to the items in your cart'
+        });
       }
 
       baseAmount = eligibleSubtotal;
