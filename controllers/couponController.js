@@ -1,4 +1,6 @@
 import Coupon from '../models/Coupon.js';
+import Product from '../models/Product.js';
+import mongoose from 'mongoose';
 import { StatusCodes } from 'http-status-codes';
 
 export const createCoupon = async (req, res) => {
@@ -77,6 +79,7 @@ export const validateCoupon = async (req, res) => {
     const codeRaw = (req.body?.code || req.query?.code || '').toString();
     const totalAmountRaw = req.body?.totalAmount ?? req.query?.totalAmount ?? 0;
     const totalAmount = Number(totalAmountRaw) || 0;
+    const itemsRaw = req.body?.items;
 
     if (!codeRaw) {
       return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Coupon code is required' });
@@ -89,13 +92,67 @@ export const validateCoupon = async (req, res) => {
       isActive: true,
       startDate: { $lte: now },
       endDate: { $gte: now }
-    });
+    }).populate('categories', 'name').populate('products','name');
 
     if (!coupon) {
       return res.status(StatusCodes.NOT_FOUND).json({ message: 'Invalid or expired coupon code' });
     }
+    
+    // Determine base amount for discount calculation.
+    // If coupon is restricted to certain products/categories, compute eligible subtotal from provided items.
+    let baseAmount = totalAmount;
+    const hasProductRestrictions = Array.isArray(coupon.products) && coupon.products.length > 0;
+    const hasCategoryRestrictions = Array.isArray(coupon.categories) && coupon.categories.length > 0;
 
-    if (totalAmount < coupon.minPurchase) {
+    if (hasProductRestrictions || hasCategoryRestrictions) {
+      const items = Array.isArray(itemsRaw) ? itemsRaw : [];
+      if (items.length === 0) {
+        return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Coupon applies only to specific items. Please add eligible products to your cart.' });
+      }
+
+      // Normalize and pick product ids from client cart payload
+      const rawIds = [...new Set(items.map(it => String(it?.productId || '').trim()).filter(Boolean))];
+      const productIds = rawIds.filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id));
+
+      const products = await Product.find({ _id: { $in: productIds } }).select('_id category categories price');
+      const eligibleProductIdSet = new Set();
+      const priceById = new Map(products.map(p => [String(p._id), Number(p.price) || 0]));
+
+      for (const p of products) {
+        const idStr = String(p._id);
+        let eligible = false;
+        if (hasProductRestrictions && coupon.products.some(x => String(x) === idStr)) {
+          eligible = true;
+        }
+        if (!eligible && hasCategoryRestrictions) {
+          const primary = p.category ? String(p.category) : null;
+          const extra = Array.isArray(p.categories) ? p.categories.map(c => String(c)) : [];
+          const prodCats = new Set([...(primary ? [primary] : []), ...extra]);
+          for (const cId of coupon.categories.map(c => String(c))) {
+            if (prodCats.has(cId)) { eligible = true; break; }
+          }
+        }
+        if (eligible) eligibleProductIdSet.add(idStr);
+      }
+
+      let eligibleSubtotal = 0;
+      for (const it of items) {
+        const pid = String(it?.productId || '').trim();
+        const qty = Number(it?.quantity) || 0;
+        const price = priceById.get(pid) ?? (Number(it?.price) || 0);
+        if (eligibleProductIdSet.has(pid)) {
+          eligibleSubtotal += qty * price;
+        }
+      }
+
+      if (eligibleSubtotal <= 0) {
+        return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Coupon is not applicable to the items in your cart' });
+      }
+
+      baseAmount = eligibleSubtotal;
+    }
+
+    if (baseAmount < coupon.minPurchase) {
       return res.status(StatusCodes.BAD_REQUEST).json({ message: `Minimum purchase amount of $${coupon.minPurchase} required` });
     }
 
@@ -105,7 +162,7 @@ export const validateCoupon = async (req, res) => {
 
     let discount = 0;
     if (coupon.type === 'percentage') {
-      discount = (totalAmount * coupon.value) / 100;
+      discount = (baseAmount * coupon.value) / 100;
       if (coupon.maxDiscount) {
         discount = Math.min(discount, coupon.maxDiscount);
       }
@@ -113,7 +170,12 @@ export const validateCoupon = async (req, res) => {
       discount = coupon.value;
     }
 
-    res.json({ coupon, discount: Number(discount.toFixed(2)) });
+    res.json({ 
+      coupon, 
+      discount: Number(discount.toFixed(2)),
+      baseAmount,
+      appliedScope: (hasProductRestrictions || hasCategoryRestrictions) ? 'restricted' : 'cart'
+    });
   } catch (error) {
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: error.message });
   }
