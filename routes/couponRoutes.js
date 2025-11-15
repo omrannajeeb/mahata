@@ -24,6 +24,8 @@ router.delete('/:id', adminAuth, deleteCoupon);
 router.post('/validate', validateCoupon);
 // Convenience GET variant to reduce accidental 404s from incorrect method usage
 router.get('/validate', validateCoupon);
+// Param-based GET fallback: /validate/ABC123 (helps when users bookmark or share direct links)
+router.get('/validate/:code', validateCoupon);
 router.post('/:code/apply', applyCoupon);
 
 export default router;

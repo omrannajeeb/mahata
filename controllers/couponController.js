@@ -76,7 +76,7 @@ export const deleteCoupon = async (req, res) => {
 export const validateCoupon = async (req, res) => {
   try {
     // Support both POST body and optional GET query fallback
-    const codeRaw = (req.body?.code || req.query?.code || '').toString();
+    const codeRaw = (req.body?.code || req.query?.code || req.params?.code || '').toString();
     const totalAmountRaw = req.body?.totalAmount ?? req.query?.totalAmount ?? 0;
     const totalAmount = Number(totalAmountRaw) || 0;
     const itemsRaw = req.body?.items;
