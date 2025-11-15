@@ -670,6 +670,8 @@ router.put('/', settingsWriteGuard, async (req, res) => {
             authBackgroundImage: settings.authBackgroundImage,
             // Auth provider toggles
             googleAuth: settings.googleAuth ? { enabled: !!settings.googleAuth.enabled, clientId: settings.googleAuth.clientId || '', secretSet: !!(settings.googleAuth.clientSecret && settings.googleAuth.clientSecret.length > 0) } : { enabled: false, clientId: '', secretSet: false }
+            ,allowedLanguages: settings.allowedLanguages,
+            defaultLanguage: settings.defaultLanguage
           }
         });
       }
