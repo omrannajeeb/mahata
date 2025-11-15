@@ -118,17 +118,21 @@ export const validateCoupon = async (req, res) => {
       const eligibleProductIdSet = new Set();
       const priceById = new Map(products.map(p => [String(p._id), Number(p.price) || 0]));
 
+      // When populated, coupon.products / coupon.categories contain full docs; fall back to raw id if not populated
+      const couponProductIds = Array.isArray(coupon.products) ? coupon.products.map(p => String(p?._id || p)) : [];
+      const couponCategoryIds = Array.isArray(coupon.categories) ? coupon.categories.map(c => String(c?._id || c)) : [];
+
       for (const p of products) {
         const idStr = String(p._id);
         let eligible = false;
-        if (hasProductRestrictions && coupon.products.some(x => String(x) === idStr)) {
+        if (hasProductRestrictions && couponProductIds.includes(idStr)) {
           eligible = true;
         }
         if (!eligible && hasCategoryRestrictions) {
           const primary = p.category ? String(p.category) : null;
           const extra = Array.isArray(p.categories) ? p.categories.map(c => String(c)) : [];
           const prodCats = new Set([...(primary ? [primary] : []), ...extra]);
-          for (const cId of coupon.categories.map(c => String(c))) {
+          for (const cId of couponCategoryIds) {
             if (prodCats.has(cId)) { eligible = true; break; }
           }
         }
