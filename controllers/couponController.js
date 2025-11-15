@@ -111,6 +111,8 @@ export const validateCoupon = async (req, res) => {
         : [];
       if (items.length === 0) {
         return res.status(StatusCodes.BAD_REQUEST).json({
+          code: 'COUPON_CATEGORY_ONLY',
+          categoryNames: readableCategoryNames,
           message: readableCategoryNames.length
             ? `Coupon is restricted. Valid only for categories: ${readableCategoryNames.join(', ')}`
             : 'Coupon applies only to specific items. Please add eligible products to your cart.'
@@ -158,6 +160,8 @@ export const validateCoupon = async (req, res) => {
 
       if (eligibleSubtotal <= 0) {
         return res.status(StatusCodes.BAD_REQUEST).json({
+          code: 'COUPON_NOT_ELIGIBLE_CATEGORY',
+          categoryNames: readableCategoryNames,
           message: readableCategoryNames.length
             ? `Coupon not applicable. It is valid only for categories: ${readableCategoryNames.join(', ')}`
             : 'Coupon is not applicable to the items in your cart'
