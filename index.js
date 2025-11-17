@@ -61,6 +61,7 @@ import brandRoutes from './routes/brandRoutes.js';
 import cloudinaryRoutes from './routes/cloudinaryRoutes.js';
 import paypalRoutes from './routes/paypalRoutes.js';
 import legalRoutes from './routes/legalRoutes.js';
+import legalDocumentRoutes from './routes/legalDocumentRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
 import paymentsRoutes from './routes/paymentsRoutes.js';
 import pageRoutes from './routes/pageRoutes.js';
@@ -73,6 +74,7 @@ import posRoutes from './routes/posRoutes.js';
 import rivhitRoutes from './routes/rivhitRoutes.js';
 import mcgRoutes from './routes/mcgRoutes.js';
 import mobilePushRoutes from './routes/mobilePushRoutes.js';
+import serviceRoutes from './routes/serviceRoutes.js';
 // Lazy import function to warm DeepSeek config from DB
 import { loadDeepseekConfigFromDb } from './services/translate/deepseek.js';
 import { startPushScheduler } from './services/pushScheduler.js';
@@ -119,9 +121,10 @@ const defaultAllowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:5173',
   'http://127.0.0.1:3000',
+  'https://mahata.netlify.app',
   'https://relaxed-cucurucho-360448.netlify.app',
   // Self origin (Render) – harmless for health checks and internal tools
-  'https://mypet-778751110625.europe-west1.run.app'
+  'https://leohol.onrender.com'
 ];
 
 // Allow override via env (comma-separated list)
@@ -154,6 +157,7 @@ const corsOptions = {
     if (allowedOrigins.includes(origin) || isNetlify) {
       return callback(null, true);
     }
+    try { console.warn('[cors] blocked origin', origin); } catch {}
     return callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
@@ -245,6 +249,7 @@ app.use('/api/brands', brandRoutes);
 app.use('/api/cloudinary', cloudinaryRoutes);
 app.use('/api/paypal', paypalRoutes);
 app.use('/api/legal', legalRoutes);
+app.use('/api/legal-documents', legalDocumentRoutes);
 app.use('/api/db', dbRoutes);
 app.use('/api/payments', paymentsRoutes);
 // File upload endpoints (must come before static /uploads to avoid intercepting multipart requests)
@@ -260,6 +265,7 @@ app.use('/api/attributes', attributeRoutes);
 app.use('/api/pos', posRoutes);
 app.use('/api/rivhit', rivhitRoutes);
 app.use('/api/mcg', mcgRoutes);
+app.use('/api/services', serviceRoutes);
 
 // Health Check Route
 app.get('/health', (req, res) => {

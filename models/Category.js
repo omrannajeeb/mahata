@@ -59,6 +59,9 @@ const categorySchema = new mongoose.Schema({
     enum: ['short', 'long'],
     default: 'short'
   }
+  ,
+  // Manager responsible for this category (used for service fee deductions)
+  managerUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }
 }, {
   timestamps: true
 });

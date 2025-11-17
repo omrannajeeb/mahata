@@ -194,6 +194,17 @@ const orderSchema = new mongoose.Schema({
   trackingNumber: {
     type: String
   }
+  ,
+  // Applied category service charges (not paid by customer). Kept separately for accounting.
+  categoryServiceCharges: [{
+    category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
+    service: { type: mongoose.Schema.Types.ObjectId, ref: 'Service' },
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    quantity: { type: Number },
+    feePerUnit: { type: Number },
+    totalFee: { type: Number },
+    managerUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }]
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
