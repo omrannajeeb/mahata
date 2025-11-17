@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import Product from '../models/Product.js';
+import Service from '../models/Service.js';
+import Category from '../models/Category.js';
+import CategoryServiceAssignment from '../models/CategoryServiceAssignment.js';
+import CategoryServiceLedger from '../models/CategoryServiceLedger.js';
 import Recipient from '../models/Recipient.js';
 import Inventory from '../models/Inventory.js';
 import { inventoryService } from '../services/inventoryService.js';
@@ -152,6 +156,9 @@ export const createOrder = async (req, res) => {
     const stockUpdates = []; // Track stock updates for rollback
 
   const reservationItems = [];
+  // Determine involved categories from request items
+  const categoryDocsCache = new Map();
+
   for (const item of items) {
       const baseProductQuery = Product.findById(item.product);
       const product = useTransaction ? await baseProductQuery.session(session) : await baseProductQuery;
@@ -210,6 +217,53 @@ export const createOrder = async (req, res) => {
 
       // Track stock update note (no direct product mutation here; inventory service will update totals)
       stockUpdates.push({ productId: product._id });
+
+      // --- Category Service Application (customer not charged) ---
+      const catId = product.category ? String(product.category) : null;
+      if (catId) {
+        // Lazy-load assignments and fallback legacy category-linked services for this category
+        let cached = categoryDocsCache.get(catId);
+        if (!cached) {
+          const [catDoc, assigns, legacySvcs] = await Promise.all([
+            Category.findById(catId).select('managerUser').lean(),
+            CategoryServiceAssignment.find({ category: catId, isActive: true }).lean(),
+            Service.find({ category: catId, isActive: true }).lean()
+          ]);
+          cached = { catDoc, assigns, legacySvcs };
+          categoryDocsCache.set(catId, cached);
+        }
+        const managerUser = cached?.catDoc?.managerUser || undefined;
+        // Build map of service defaults for assignments
+        let servicesMap = new Map();
+        const svcIds = (cached?.assigns || []).map(a => String(a.service));
+        if (svcIds.length) {
+          const svcDocs = await Service.find({ _id: { $in: svcIds } }).lean();
+          servicesMap = new Map(svcDocs.map(s => [String(s._id), s]));
+        }
+        const effectiveEntries = [];
+        for (const a of (cached?.assigns || [])) {
+          const svc = servicesMap.get(String(a.service));
+          const fee = (typeof a.feePerUnit === 'number') ? a.feePerUnit : (svc?.feePerUnit || 0);
+          if (fee > 0) effectiveEntries.push({ service: a.service, fee });
+        }
+        // Legacy direct category-bound services
+        for (const svc of (cached?.legacySvcs || [])) {
+          const fee = svc?.feePerUnit || 0;
+          if (fee > 0) effectiveEntries.push({ service: svc._id, fee });
+        }
+        for (const ent of effectiveEntries) {
+          const totalFee = ent.fee * qty;
+          (orderItems.__serviceCharges = orderItems.__serviceCharges || []).push({
+            category: product.category,
+            service: ent.service,
+            product: product._id,
+            quantity: qty,
+            feePerUnit: ent.fee,
+            totalFee,
+            managerUser
+          });
+        }
+      }
     }
 
     // Inventory settings control: reserve/decrement on order placement if enabled
@@ -392,6 +446,19 @@ export const createOrder = async (req, res) => {
       paymentStatus: paymentMethod === 'cod' ? 'pending' : 'pending'
     });
 
+    // Attach accumulated service charges gathered earlier
+    if (Array.isArray(orderItems.__serviceCharges) && orderItems.__serviceCharges.length) {
+      order.categoryServiceCharges = orderItems.__serviceCharges.map(sc => ({
+        category: sc.category,
+        service: sc.service,
+        product: sc.product,
+        quantity: sc.quantity,
+        feePerUnit: sc.feePerUnit,
+        totalFee: sc.totalFee,
+        managerUser: sc.managerUser
+      }));
+    }
+
     let savedOrder;
     try {
       if (useTransaction) {
@@ -423,6 +490,26 @@ export const createOrder = async (req, res) => {
 
     // Emit real-time event for new order
     realTimeEventService.emitNewOrder(savedOrder);
+
+    // Persist ledger entries (outside transaction if commit succeeded)
+    try {
+      if (Array.isArray(savedOrder.categoryServiceCharges) && savedOrder.categoryServiceCharges.length) {
+        const ledgerDocs = savedOrder.categoryServiceCharges.map(ch => ({
+          category: ch.category,
+          service: ch.service,
+          order: savedOrder._id,
+          product: ch.product,
+          managerUser: ch.managerUser,
+          quantity: ch.quantity,
+          feePerUnit: ch.feePerUnit,
+          totalFee: ch.totalFee,
+          currency: savedOrder.currency
+        }));
+        await CategoryServiceLedger.insertMany(ledgerDocs);
+      }
+    } catch (ledgerErr) {
+      console.warn('Ledger insertion failed (non-fatal)', ledgerErr?.message || ledgerErr);
+    }
 
     // Fire web push notification targeted to admins (fallback broadcast)
     let webPushSent = 0;
