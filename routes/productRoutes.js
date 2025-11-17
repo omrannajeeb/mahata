@@ -46,8 +46,9 @@ router.get('/stats', adminOrCategoryManager, constrainQueryToAssignedCategories,
 router.get('/search', searchProducts);
 router.get('/lite/:id', getProductLite);
 // Place static paths before dynamic ':id' to avoid conflicts
-router.get('/:id/stock', getProductStock); // New endpoint for stock levels
-router.get('/:id', getProduct);
+router.get('/:id([0-9a-fA-F]{24})/stock', getProductStock); // New endpoint for stock levels
+// Constrain :id to a 24-hex ObjectId so paths like /manage don't collide
+router.get('/:id([0-9a-fA-F]{24})', getProduct);
 
 // Protected routes (admin only)
 router.post('/', adminOrCategoryManager, enforceProductScopeByBody, createProduct);
@@ -81,6 +82,8 @@ router.post('/videos/temp', adminOrCategoryManager, videoUpload.single('video'),
 router.delete('/:id', adminOrCategoryManager, enforceProductScopeById, deleteProduct);
 
 // Management-friendly list for admins and category managers (scoped for managers)
+// Management-friendly list for admins and category managers (scoped for managers)
+// Place before any unconstrained dynamic :id routes (now constrained, but keep for clarity)
 router.get('/manage', adminOrCategoryManager, constrainQueryToAssignedCategories, getProducts);
 
 // Review routes

@@ -28,19 +28,26 @@ router.get('/', (req, res, next) => {
 });
 router.get('/tree', getCategoryTree);
 router.get('/parent/:parentId', getSubcategories); // parentId = 'root' for root categories
-router.get('/:id', getCategory);
+// Use regex to ensure we only match valid ObjectId and not literal paths like 'assigned'
+router.get('/:id([0-9a-fA-F]{24})', getCategory);
 
 // Admin routes
 // Management routes (admins full access; category managers scoped)
 router.get('/assigned', adminOrCategoryManager, async (req, res, next) => {
   try {
+    // Admin: return full list (reuse existing handler)
     if (req.user.role === 'admin') return getAllCategories(req, res, next);
-    // For managers, list only assigned categories
     const { default: Category } = await import('../models/Category.js');
-    const ids = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds : [];
+    let ids = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds : [];
+    // Normalize and filter only valid 24-hex ObjectId strings to avoid CastErrors
+    ids = ids.map(id => String(id)).filter(id => /^[0-9a-fA-F]{24}$/.test(id));
+    if (!ids.length) return res.json([]);
     const list = await Category.find({ _id: { $in: ids } }).sort({ order: 1, name: 1 }).lean();
     return res.json(list);
-  } catch (e) { return next(e); }
+  } catch (e) {
+    console.error('[categories/assigned] error', e);
+    return res.status(500).json({ message: 'Failed to load assigned categories' });
+  }
 });
 
 router.post('/', adminOrCategoryManager,
