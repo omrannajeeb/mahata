@@ -1,5 +1,5 @@
 import express from 'express';
-import { auth, adminAuth } from '../middleware/auth.js';
+import { auth, adminAuth, adminOrCategoryManager, enforceProductScopeById, constrainQueryToAssignedCategories, enforceProductScopeByBody } from '../middleware/auth.js';
 import {
   getProducts,
   getProduct,
@@ -42,7 +42,7 @@ router.get('/', (req, res, next) => {
 });
 router.get('/filters', getProductFilters); // must be before :id
 // Admin stats (total/active counts)
-router.get('/stats', adminAuth, getProductStats);
+router.get('/stats', adminOrCategoryManager, constrainQueryToAssignedCategories, getProductStats);
 router.get('/search', searchProducts);
 router.get('/lite/:id', getProductLite);
 // Place static paths before dynamic ':id' to avoid conflicts
@@ -50,35 +50,38 @@ router.get('/:id/stock', getProductStock); // New endpoint for stock levels
 router.get('/:id', getProduct);
 
 // Protected routes (admin only)
-router.post('/', adminAuth, createProduct);
-router.post('/bulk', adminAuth, bulkCreateProducts);
+router.post('/', adminOrCategoryManager, enforceProductScopeByBody, createProduct);
+router.post('/bulk', adminOrCategoryManager, enforceProductScopeByBody, createProduct);
 // Translation endpoints
-router.post('/translate/batch', adminAuth, batchTranslateProducts);
-router.post('/:id/translate', adminAuth, translateProductFields);
+router.post('/translate/batch', adminOrCategoryManager, constrainQueryToAssignedCategories, batchTranslateProducts);
+router.post('/:id/translate', adminOrCategoryManager, enforceProductScopeById, translateProductFields);
 // Manual i18n (admin)
-router.get('/:id/i18n', adminAuth, getProductI18n);
-router.put('/:id/i18n', adminAuth, setProductI18n);
+router.get('/:id/i18n', adminOrCategoryManager, enforceProductScopeById, getProductI18n);
+router.put('/:id/i18n', adminOrCategoryManager, enforceProductScopeById, setProductI18n);
 // Put static route before dynamic ones
-router.put('/featured/reorder', adminAuth, reorderFeaturedProducts);
-router.put('/:id', adminAuth, updateProduct);
+router.put('/featured/reorder', adminOrCategoryManager, constrainQueryToAssignedCategories, reorderFeaturedProducts);
+router.put('/:id', adminOrCategoryManager, enforceProductScopeById, enforceProductScopeByBody, updateProduct);
 // Sync quantity from Rivhit for product or variant (variantId via query param)
-router.post('/:id/sync-rivhit-qty', adminAuth, syncQuantityFromRivhit);
-router.put('/:id/related', adminAuth, updateRelatedProducts);
-router.put('/:id/addons', adminAuth, updateAddOns);
+router.post('/:id/sync-rivhit-qty', adminOrCategoryManager, enforceProductScopeById, syncQuantityFromRivhit);
+router.put('/:id/related', adminOrCategoryManager, enforceProductScopeById, updateRelatedProducts);
+router.put('/:id/addons', adminOrCategoryManager, enforceProductScopeById, updateAddOns);
 // Variant management
-router.post('/:id/variants/generate', adminAuth, generateProductVariants);
-router.put('/:id/variants/:variantId', adminAuth, updateVariant);
-router.put('/:id/variants-bulk', adminAuth, bulkUpdateVariants);
-router.delete('/:id/variants/:variantId', adminAuth, deleteVariant);
+router.post('/:id/variants/generate', adminOrCategoryManager, enforceProductScopeById, generateProductVariants);
+router.put('/:id/variants/:variantId', adminOrCategoryManager, enforceProductScopeById, updateVariant);
+router.put('/:id/variants-bulk', adminOrCategoryManager, enforceProductScopeById, bulkUpdateVariants);
+router.delete('/:id/variants/:variantId', adminOrCategoryManager, enforceProductScopeById, deleteVariant);
 // Attribute value images on a product
-router.get('/:id/attribute-images', adminAuth, getAttributeValueImages);
-router.put('/:id/attribute-images', adminAuth, setAttributeValueImages);
+router.get('/:id/attribute-images', adminOrCategoryManager, enforceProductScopeById, getAttributeValueImages);
+router.put('/:id/attribute-images', adminOrCategoryManager, enforceProductScopeById, setAttributeValueImages);
 // Partial image-only update
-router.patch('/:id/images', adminAuth, updateProductImages);
-router.post('/:id/videos', adminAuth, videoUpload.single('video'), uploadProductVideo);
+router.patch('/:id/images', adminOrCategoryManager, enforceProductScopeById, updateProductImages);
+router.post('/:id/videos', adminOrCategoryManager, enforceProductScopeById, videoUpload.single('video'), uploadProductVideo);
 // Pre-create standalone video upload (returns URL only). Must precede dynamic :id catch for GETs but after other static POSTs.
-router.post('/videos/temp', adminAuth, videoUpload.single('video'), uploadTempProductVideo);
-router.delete('/:id', adminAuth, deleteProduct);
+router.post('/videos/temp', adminOrCategoryManager, videoUpload.single('video'), uploadTempProductVideo);
+router.delete('/:id', adminOrCategoryManager, enforceProductScopeById, deleteProduct);
+
+// Management-friendly list for admins and category managers (scoped for managers)
+router.get('/manage', adminOrCategoryManager, constrainQueryToAssignedCategories, getProducts);
 
 // Review routes
 router.get('/reviews/all', adminAuth, getAllReviews);

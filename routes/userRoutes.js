@@ -233,7 +233,7 @@ router.get('/', adminAuth, async (req, res) => {
       statsLookup,
       addStats,
       ...( (minOrders !== null || maxOrders !== null) ? [matchOrderRange] : []),
-    { $project: { name:1, email:1, role:1, createdAt:1, image:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1 } },
+    { $project: { name:1, email:1, role:1, createdAt:1, image:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1 } },
       sortStage
     ];
 
@@ -319,7 +319,7 @@ router.get('/export', adminAuth, async (req, res) => {
   const waOptInRaw = (req.query.waOptIn || '').toString().trim().toLowerCase();
   if (waOptInRaw === 'true') match.whatsappOptIn = true;
   else if (waOptInRaw === 'false') match.whatsappOptIn = false;
-  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1 } }, sortStage ];
+  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1 } }, sortStage ];
     const users = await User.aggregate(pipeline);
 
   const header = ['Name', 'Email', 'Role', 'Phone', 'WA Opt-In', 'Last WA Contact', 'WA Preview', 'Created At', 'Order Count', 'Total Spent', 'Avg Order Value', 'Last Order'];
@@ -403,7 +403,7 @@ router.get('/export.xlsx', adminAuth, async (req, res) => {
     } };
   const rangeMatch = (minOrders !== null || maxOrders !== null) ? (() => { const r = {}; if (minOrders !== null) r.$gte = minOrders; if (maxOrders !== null) r.$lte = maxOrders; return { $match: { orderCount: r } }; })() : null;
     const sortStage = { $sort: { [sortBy]: sortDir, _id: 1 } };
-  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1 } }, sortStage ];
+  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1 } }, sortStage ];
     const users = await User.aggregate(pipeline);
 
     const rows = users.map(u => ({
@@ -486,7 +486,7 @@ router.get('/:id/orders', adminAuth, async (req, res) => {
 router.patch('/:id/role', adminAuth, async (req, res) => {
   try {
     const { role } = req.body;
-    if (!['user','admin'].includes(role)) {
+    if (!['user','admin','categoryManager'].includes(role)) {
       return res.status(400).json({ message: 'Invalid role' });
     }
     const u = await User.findById(req.params.id);
@@ -510,7 +510,7 @@ router.patch('/bulk-role', adminAuth, async (req, res) => {
     if (!Array.isArray(userIds) || userIds.length === 0) {
       return res.status(400).json({ message: 'userIds array required' });
     }
-    if (!['user','admin'].includes(role)) {
+    if (!['user','admin','categoryManager'].includes(role)) {
       return res.status(400).json({ message: 'Invalid role' });
     }
     // Prevent self change through bulk
@@ -520,6 +520,25 @@ router.patch('/bulk-role', adminAuth, async (req, res) => {
   } catch (error) {
     console.error('Error bulk updating roles:', error);
     res.status(500).json({ message: 'Failed to bulk update roles' });
+  }
+});
+
+// Admin: assign categories to a user (intended for categoryManager role)
+router.patch('/:id/assigned-categories', adminAuth, async (req, res) => {
+  try {
+    const { categoryIds } = req.body;
+    if (!Array.isArray(categoryIds)) {
+      return res.status(400).json({ message: 'categoryIds array required' });
+    }
+    const u = await User.findById(req.params.id);
+    if (!u) return res.status(404).json({ message: 'User not found' });
+    // Ensure ids are valid object ids (keep strings; mongoose will cast)
+    u.assignedCategories = categoryIds;
+    await u.save();
+    res.json({ message: 'Assigned categories updated', user: { id: u._id, role: u.role, assignedCategories: u.assignedCategories } });
+  } catch (error) {
+    console.error('Error updating assigned categories:', error);
+    res.status(500).json({ message: 'Failed to update assigned categories' });
   }
 });
 
