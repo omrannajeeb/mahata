@@ -49,9 +49,11 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
+    enum: ['user', 'admin', 'categoryManager'],
     default: 'user'
   },
+  // For category managers: list of categories they are allowed to manage
+  assignedCategories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category', index: true }],
   whatsappOptIn: {
     type: Boolean,
     default: false, // Explicit user consent required for marketing messages

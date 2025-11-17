@@ -32,6 +32,14 @@ const settingsSchema = new mongoose.Schema({
     enum: ['USD', 'EUR', 'GBP', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'JOD', 'LBP', 'EGP', 'IQD', 'ILS'],
     default: 'USD'
   },
+  allowedLanguages: {
+    type: [String],
+    default: ['ar','en','he']
+  },
+  defaultLanguage: {
+    type: String,
+    default: 'ar'
+  },
   timezone: {
     type: String,
     required: true,
