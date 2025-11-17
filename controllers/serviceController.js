@@ -26,9 +26,27 @@ export const getServiceById = asyncHandler(async (req, res) => {
 
 export const createService = asyncHandler(async (req, res) => {
   const { title, description, feePerUnit = 0, isActive = true, imageUrl, slug, order = 0, category } = req.body || {};
-  const normalizedSlug = slug ? String(slug).trim().toLowerCase() : (title ? slugify(title) : undefined);
-  const item = await Service.create({ title, description, feePerUnit, isActive, imageUrl, slug: normalizedSlug, order, category });
-  res.status(201).json(item);
+  let baseSlug = slug ? String(slug).trim().toLowerCase() : (title ? slugify(title) : undefined);
+  let finalSlug = baseSlug;
+  if (finalSlug) {
+    // Ensure uniqueness by appending -2, -3... if needed
+    let n = 2;
+    while (await Service.exists({ slug: finalSlug })) {
+      finalSlug = `${baseSlug}-${n++}`;
+      // Simple upper bound to avoid infinite loop on pathological collisions
+      if (n > 50) break;
+    }
+  }
+  try {
+    const item = await Service.create({ title, description, feePerUnit, isActive, imageUrl, slug: finalSlug, order, category });
+    return res.status(201).json(item);
+  } catch (e) {
+    // If duplicate key slipped through (race), surface clearer message
+    if (e && e.code === 11000) {
+      return res.status(409).json({ message: 'Service title/slug already exists' });
+    }
+    throw e;
+  }
 });
 
 export const updateService = asyncHandler(async (req, res) => {
@@ -36,18 +54,47 @@ export const updateService = asyncHandler(async (req, res) => {
   const item = await Service.findById(id);
   if (!item) return res.status(404).json({ message: 'Service not found' });
   const updatable = ['title', 'description', 'feePerUnit', 'isActive', 'imageUrl', 'slug', 'order', 'category'];
+  let incomingTitle = undefined;
   updatable.forEach((k) => {
     if (Object.prototype.hasOwnProperty.call(req.body || {}, k)) {
       const val = req.body[k];
       if (k === 'slug' && typeof val === 'string') item[k] = val.trim().toLowerCase();
       else item[k] = val;
+      if (k === 'title') incomingTitle = val;
     }
   });
-  if (!('slug' in (req.body || {})) && typeof req.body?.title === 'string' && !item.slug) {
-    item.slug = slugify(req.body.title);
+  // Auto-generate slug if missing and title provided
+  if (!item.slug && typeof incomingTitle === 'string' && incomingTitle.trim()) {
+    let baseSlug = slugify(incomingTitle);
+    let finalSlug = baseSlug;
+    let n = 2;
+    while (await Service.exists({ slug: finalSlug, _id: { $ne: item._id } })) {
+      finalSlug = `${baseSlug}-${n++}`;
+      if (n > 50) break;
+    }
+    item.slug = finalSlug;
+  } else if (Object.prototype.hasOwnProperty.call(req.body || {}, 'slug')) {
+    // Ensure updated slug is unique (race-safe best effort)
+    if (item.slug) {
+      let baseSlug = item.slug;
+      let finalSlug = baseSlug;
+      let n = 2;
+      while (await Service.exists({ slug: finalSlug, _id: { $ne: item._id } })) {
+        finalSlug = `${baseSlug}-${n++}`;
+        if (n > 50) break;
+      }
+      item.slug = finalSlug;
+    }
   }
-  await item.save();
-  res.json(item);
+  try {
+    await item.save();
+    return res.json(item);
+  } catch (e) {
+    if (e && e.code === 11000) {
+      return res.status(409).json({ message: 'Service title/slug already exists' });
+    }
+    throw e;
+  }
 });
 
 export const deleteService = asyncHandler(async (req, res) => {
