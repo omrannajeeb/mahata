@@ -80,7 +80,28 @@ export const reorderServices = asyncHandler(async (req, res) => {
 // ----- Category-Service Assignments -----
 export const listAssignments = asyncHandler(async (req, res) => {
   const { category } = req.query || {};
-  const query = category ? { category } : {};
+  // If a category manager, limit to their assigned categories
+  const role = req.user?.role;
+  let allowed = null;
+  if (role === 'categoryManager') {
+    const ids = Array.isArray(req.categoryScopeIds)
+      ? req.categoryScopeIds
+      : (Array.isArray(req.user?.assignedCategories) ? req.user.assignedCategories.map((c)=> c?.toString ? c.toString() : String(c)) : []);
+    allowed = ids;
+    if (!allowed.length) return res.json([]);
+  }
+
+  let query = {};
+  if (category) {
+    // Explicit category filter
+    if (allowed && !allowed.includes(String(category))) {
+      return res.status(403).json({ message: 'Category out of scope' });
+    }
+    query = { category };
+  } else if (allowed) {
+    query = { category: { $in: allowed } };
+  }
+
   const rows = await CategoryServiceAssignment.find(query).lean();
   res.json(rows);
 });
@@ -101,6 +122,15 @@ export const updateAssignment = asyncHandler(async (req, res) => {
   const { feePerUnit, isActive } = req.body || {};
   const doc = await CategoryServiceAssignment.findById(id);
   if (!doc) return res.status(404).json({ message: 'Assignment not found' });
+  // Scope check for category managers
+  if (req.user?.role === 'categoryManager') {
+    const allowed = Array.isArray(req.categoryScopeIds)
+      ? req.categoryScopeIds
+      : (Array.isArray(req.user?.assignedCategories) ? req.user.assignedCategories.map((c)=> c?.toString ? c.toString() : String(c)) : []);
+    if (!allowed.includes(String(doc.category))) {
+      return res.status(403).json({ message: 'Category out of scope' });
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(req.body || {}, 'feePerUnit')) {
     doc.feePerUnit = (feePerUnit === '' || feePerUnit === null || typeof feePerUnit === 'undefined') ? undefined : Number(feePerUnit);
   }
@@ -113,6 +143,14 @@ export const deleteAssignment = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const doc = await CategoryServiceAssignment.findById(id);
   if (!doc) return res.status(404).json({ message: 'Assignment not found' });
+  if (req.user?.role === 'categoryManager') {
+    const allowed = Array.isArray(req.categoryScopeIds)
+      ? req.categoryScopeIds
+      : (Array.isArray(req.user?.assignedCategories) ? req.user.assignedCategories.map((c)=> c?.toString ? c.toString() : String(c)) : []);
+    if (!allowed.includes(String(doc.category))) {
+      return res.status(403).json({ message: 'Category out of scope' });
+    }
+  }
   await doc.deleteOne();
   res.json({ success: true });
 });
