@@ -29,28 +29,70 @@ router.get('/manage', adminOrCategoryManager, async (req, res) => {
   try {
     // Admin delegates to existing controller for consistency
     if (req.user.role === 'admin') return getAllOrders(req, res);
-    const scopeIds = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(id=>String(id)).filter(id=>/^[0-9a-fA-F]{24}$/.test(id)) : [];
+    const scopeIds = Array.isArray(req.categoryScopeIds)
+      ? req.categoryScopeIds.map(id => String(id)).filter(id => /^[0-9a-fA-F]{24}$/.test(id))
+      : [];
     if (!scopeIds.length) return res.json([]);
+
     // Fetch all orders (could be optimized with aggregation; kept simple)
-    const orders = await (await import('../models/Order.js')).default.find().lean();
+    const OrderModel = (await import('../models/Order.js')).default;
+    const orders = await OrderModel.find().lean();
+
     // Collect unique product ids from order items
-    const productIds = Array.from(new Set(orders.flatMap(o => (o.items||[]).map(it => String(it.product)).filter(Boolean))));
+    const productIds = Array.from(
+      new Set(
+        orders.flatMap(o => (o.items || []).map(it => String(it.product)).filter(Boolean))
+      )
+    );
     if (!productIds.length) return res.json([]);
+
     const Product = (await import('../models/Product.js')).default;
-    const prodDocs = await Product.find({ _id: { $in: productIds } }).select('category categories').lean();
+    const prodDocs = await Product.find({ _id: { $in: productIds } })
+      .select('category categories')
+      .lean();
     const prodMap = new Map(prodDocs.map(p => [String(p._id), p]));
-    const allowedOrderIds = new Set();
+
+    // Build scoped view per order: keep only items in assigned categories and recompute total
+    const scopedOrders = [];
     for (const o of orders) {
-      for (const it of (o.items||[])) {
+      const scopedItems = [];
+      for (const it of (o.items || [])) {
         const p = prodMap.get(String(it.product));
         if (!p) continue;
-        // Primary category + extra categories
-        const cats = [p.category, ...(Array.isArray(p.categories) ? p.categories : [])].filter(Boolean).map(c=>String(c));
-        if (cats.some(c => scopeIds.includes(c))) { allowedOrderIds.add(String(o._id)); break; }
+        const cats = [p.category, ...(Array.isArray(p.categories) ? p.categories : [])]
+          .filter(Boolean)
+          .map(c => String(c));
+        const inScope = cats.some(c => scopeIds.includes(c));
+        if (inScope) {
+          // Choose a representative category for this item (prefer one within scope)
+          const matchedCat = cats.find(c => scopeIds.includes(c)) || cats[0] || null;
+          // Attach helper fields for UI analytics without altering stored schema
+          scopedItems.push({
+            ...it,
+            productCategory: matchedCat || null,
+            productId: String(it.product || '')
+          });
+        }
       }
+      if (!scopedItems.length) continue; // No in-scope items for this order
+      const scopedTotal = scopedItems.reduce(
+        (sum, it) => sum + (Number(it.price) || 0) * (Number(it.quantity) || 0),
+        0
+      );
+      scopedOrders.push({
+        ...o,
+        items: scopedItems,
+        totalAmount: scopedTotal,
+        scoped: {
+          categories: scopeIds,
+          originalTotal: Number(o.totalAmount) || 0,
+          scopedTotal,
+          excludedTotal: Math.max(0, (Number(o.totalAmount) || 0) - scopedTotal)
+        }
+      });
     }
-    const filtered = orders.filter(o => allowedOrderIds.has(String(o._id)));
-    return res.json(filtered);
+
+    return res.json(scopedOrders);
   } catch (e) {
     console.error('[orders/manage] error', e);
     return res.status(500).json({ message: 'Failed to load scoped orders' });
