@@ -75,6 +75,7 @@ import rivhitRoutes from './routes/rivhitRoutes.js';
 import mcgRoutes from './routes/mcgRoutes.js';
 import mobilePushRoutes from './routes/mobilePushRoutes.js';
 import serviceRoutes from './routes/serviceRoutes.js';
+import walletRoutes from './routes/walletRoutes.js';
 // Lazy import function to warm DeepSeek config from DB
 import { loadDeepseekConfigFromDb } from './services/translate/deepseek.js';
 import { startPushScheduler } from './services/pushScheduler.js';
@@ -266,6 +267,7 @@ app.use('/api/pos', posRoutes);
 app.use('/api/rivhit', rivhitRoutes);
 app.use('/api/mcg', mcgRoutes);
 app.use('/api/services', serviceRoutes);
+app.use('/api/wallet', walletRoutes);
 
 // Health Check Route
 app.get('/health', (req, res) => {
