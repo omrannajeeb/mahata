@@ -195,6 +195,18 @@ export const createCategory = async (req, res) => {
       return res.status(400).json({ message: 'Category name is required' });
     }
 
+    // CategoryManager: must provide a parent that is within their scope (assigned categories)
+    if (req.user?.role === 'categoryManager') {
+      const parentId = req.body.parent;
+      if (!parentId) {
+        return res.status(400).json({ message: 'CategoryManager must create subcategory under an assigned parent' });
+      }
+      const scope = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [];
+      if (!scope.includes(String(parentId))) {
+        return res.status(403).json({ message: 'Parent category not in your assigned scope' });
+      }
+    }
+
     // Check for duplicate name under same parent
     const existingCategory = await Category.findOne({ 
       name: { $regex: new RegExp(`^${req.body.name.trim()}$`, 'i') },
