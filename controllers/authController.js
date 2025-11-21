@@ -102,7 +102,9 @@ export const register = async (req, res) => {
         email: user.email,
         role: user.role,
         image: user.image || null,
-        assignedCategories: Array.isArray(user.assignedCategories) ? user.assignedCategories.map(c => c.toString()) : []
+        assignedCategories: Array.isArray(user.assignedCategories) ? user.assignedCategories.map(c => c.toString()) : [],
+        managerVisibleModules: Array.isArray(user.managerVisibleModules) ? user.managerVisibleModules : []
+        , hiddenModules: Array.isArray(user.hiddenModules) ? user.hiddenModules : []
       }
     });
   } catch (error) {
@@ -196,7 +198,9 @@ export const getCurrentUser = async (req, res) => {
       email: user.email,
       role: user.role,
       image: user.image || null,
-      assignedCategories: Array.isArray(user.assignedCategories) ? user.assignedCategories.map(c => c.toString()) : []
+      assignedCategories: Array.isArray(user.assignedCategories) ? user.assignedCategories.map(c => c.toString()) : [],
+      managerVisibleModules: Array.isArray(user.managerVisibleModules) ? user.managerVisibleModules : []
+      , hiddenModules: Array.isArray(user.hiddenModules) ? user.hiddenModules : []
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -252,7 +256,8 @@ export const refresh = async (req, res) => {
       try { revokeUserTokens(user._id.toString()); } catch {}
     }
     const { accessToken } = issueTokens(res, user._id);
-    return res.json({ token: accessToken, user: { id: user._id, name: user.name, email: user.email, role: user.role, image: user.image || null, assignedCategories: Array.isArray(user.assignedCategories) ? user.assignedCategories.map(c => c.toString()) : [] } });
+    return res.json({ token: accessToken, user: { id: user._id, name: user.name, email: user.email, role: user.role, image: user.image || null, assignedCategories: Array.isArray(user.assignedCategories) ? user.assignedCategories.map(c => c.toString()) : [], managerVisibleModules: Array.isArray(user.managerVisibleModules) ? user.managerVisibleModules : [], hiddenModules: Array.isArray(user.hiddenModules) ? user.hiddenModules : [] } });
+    
   } catch (e) {
     console.error('Refresh error:', e);
     return res.status(500).json({ message: 'Failed to refresh session' });

@@ -1,5 +1,6 @@
 import Coupon from '../models/Coupon.js';
 import Product from '../models/Product.js';
+import Order from '../models/Order.js';
 import mongoose from 'mongoose';
 import { StatusCodes } from 'http-status-codes';
 
@@ -15,11 +16,53 @@ export const createCoupon = async (req, res) => {
 
 export const getAllCoupons = async (req, res) => {
   try {
+    const includeSales = String(req.query.includeSales || '0') === '1';
+
+    if (!includeSales) {
+      const coupons = await Coupon.find()
+        .populate('categories', 'name')
+        .populate('products', 'name')
+        .sort('-createdAt');
+      return res.json(coupons);
+    }
+
+    // Aggregate order stats per coupon code
+    const stats = await Order.aggregate([
+      { $match: { 'coupon.code': { $exists: true, $ne: null } } },
+      { $group: {
+          _id: '$coupon.code',
+          totalSales: { $sum: '$totalAmount' },
+          orderCount: { $sum: 1 },
+          totalDiscountGiven: { $sum: { $ifNull: ['$coupon.discount', 0] } }
+        }
+      }
+    ]);
+    const statsMap = new Map(stats.map(s => [String(s._id), s]));
+
     const coupons = await Coupon.find()
       .populate('categories', 'name')
       .populate('products', 'name')
-      .sort('-createdAt');
-    res.json(coupons);
+      .sort('-createdAt')
+      .lean();
+
+    const enriched = coupons.map(c => {
+      const st = statsMap.get(String(c.code));
+      const totalSales = st?.totalSales || 0;
+      const commissionPct = Number(c.commissionPercentage) || 0;
+      const commissionAmount = Number(((totalSales * commissionPct) / 100).toFixed(2));
+      const netSales = Number((totalSales - commissionAmount).toFixed(2));
+      return {
+        ...c,
+        totalSales,
+        orderCount: st?.orderCount || 0,
+        totalDiscountGiven: st?.totalDiscountGiven || 0,
+        commissionPercentage: commissionPct,
+        commissionAmount,
+        netSales
+      };
+    });
+
+    res.json(enriched);
   } catch (error) {
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: error.message });
   }

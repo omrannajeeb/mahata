@@ -90,6 +90,17 @@ export const createOrder = async (req, res) => {
   try {
     console.log('createOrder called with body:', JSON.stringify(req.body, null, 2));
   const { items, shippingAddress, paymentMethod, customerInfo } = req.body;
+  const couponInput = req.body?.coupon || null; // expect { code, discount }
+  let couponSnapshot = null;
+  if (couponInput && typeof couponInput === 'object') {
+    const rawCode = couponInput.code || req.body.couponCode;
+    if (rawCode) {
+      couponSnapshot = {
+        code: String(rawCode).toUpperCase(),
+        discount: Number(couponInput.discount || req.body.couponDiscount || 0) || 0
+      };
+    }
+  }
 
     // If the request includes a Bearer token, attempt to associate the order with the authenticated user
     try {
@@ -442,6 +453,7 @@ export const createOrder = async (req, res) => {
         city: shippingAddress.city,
         weight: 0
       },
+      ...(couponSnapshot ? { coupon: couponSnapshot } : {}),
       // For online payments (card/paypal), mark as pending until provider capture completes
       paymentStatus: paymentMethod === 'cod' ? 'pending' : 'pending'
     });
