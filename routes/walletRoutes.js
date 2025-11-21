@@ -7,10 +7,11 @@ import WalletRequest from '../models/WalletRequest.js';
 
 const router = express.Router();
 
-// Helper to compute scoped sales for a manager based on assigned categories
-async function computeScopedSalesAndFees(userId, scopeCategoryIds) {
+// Helper to compute scoped sales & fees for a manager based on assigned categories.
+// Aligned with /orders/manage logic so wallet figures match dashboard cards.
+async function computeScopedSalesAndFees(_userId, scopeCategoryIds) {
   const orders = await Order.find().lean();
-  if (!orders.length) return { totalSales: 0, totalFees: 0, recentSales: [], recentFees: [] };
+  if (!orders.length || !scopeCategoryIds.length) return { totalSales: 0, totalFees: 0, recentSales: [], recentFees: [], serviceBreakdown: [] };
 
   // Build product map for category lookup
   const productIds = Array.from(new Set(orders.flatMap(o => (o.items || []).map(it => String(it.product)).filter(Boolean))));
@@ -19,46 +20,44 @@ async function computeScopedSalesAndFees(userId, scopeCategoryIds) {
 
   let totalSales = 0;
   const recentSales = [];
-
-  for (const o of orders) {
-    let orderSales = 0;
-    for (const it of (o.items || [])) {
-      const p = prodMap.get(String(it.product));
-      if (!p) continue;
-      const cats = [p.category, ...(Array.isArray(p.categories)? p.categories: [])].filter(Boolean).map(c => String(c));
-      const inScope = cats.some(c => scopeCategoryIds.includes(c));
-      if (!inScope) continue;
-      const line = (Number(it.price) || 0) * (Number(it.quantity) || 0);
-      orderSales += line;
-    }
-    if (orderSales > 0) {
-      totalSales += orderSales;
-      recentSales.push({ orderId: String(o._id), amount: orderSales, date: o.createdAt });
-    }
-  }
-
-  // Service fees (categoryServiceCharges) linked to this manager and in scope categories
   let totalFees = 0;
   const recentFees = [];
   const feeByService = new Map(); // serviceId -> { totalFee, serviceId }
+
   for (const o of orders) {
-    const charges = Array.isArray(o.categoryServiceCharges) ? o.categoryServiceCharges : [];
-    for (const sc of charges) {
-      if (String(sc.managerUser) !== String(userId)) continue;
-      if (sc.category && !scopeCategoryIds.includes(String(sc.category))) continue;
-      const fee = Number(sc.totalFee) || 0;
-      if (fee > 0) {
-        totalFees += fee;
-        recentFees.push({ orderId: String(o._id), amount: fee, service: String(sc.service), category: String(sc.category || ''), date: o.createdAt });
-        const sid = String(sc.service);
-        const prev = feeByService.get(sid) || { totalFee: 0, serviceId: sid };
-        prev.totalFee += fee;
-        feeByService.set(sid, prev);
+    // Determine scoped items (same approach as /orders/manage) and compute scoped total
+    let scopedTotal = 0;
+    let inScopeOrder = false;
+    for (const it of (o.items || [])) {
+      const p = prodMap.get(String(it.product));
+      if (!p) continue;
+      const cats = [p.category, ...(Array.isArray(p.categories) ? p.categories : [])].filter(Boolean).map(c => String(c));
+      const matched = cats.some(c => scopeCategoryIds.includes(c));
+      if (!matched) continue;
+      inScopeOrder = true;
+      scopedTotal += (Number(it.price) || 0) * (Number(it.quantity) || 0);
+    }
+    if (inScopeOrder && scopedTotal > 0) {
+      totalSales += scopedTotal;
+      recentSales.push({ orderId: String(o._id), amount: scopedTotal, date: o.createdAt });
+      // Collect fees from order charges whose category is in scope (do NOT filter by managerUser to match dashboard logic)
+      const charges = Array.isArray(o.categoryServiceCharges) ? o.categoryServiceCharges : [];
+      for (const sc of charges) {
+        if (sc.category && !scopeCategoryIds.includes(String(sc.category))) continue;
+        const fee = Number(sc.totalFee) || 0;
+        if (fee > 0) {
+          totalFees += fee;
+          recentFees.push({ orderId: String(o._id), amount: fee, service: String(sc.service), category: String(sc.category || ''), date: o.createdAt });
+          const sid = String(sc.service);
+            const prev = feeByService.get(sid) || { totalFee: 0, serviceId: sid };
+            prev.totalFee += fee;
+            feeByService.set(sid, prev);
+        }
       }
     }
   }
 
-  // Keep only recent last 20 entries
+  // Sort & trim recent arrays
   recentSales.sort((a,b)=> new Date(b.date) - new Date(a.date));
   recentFees.sort((a,b)=> new Date(b.date) - new Date(a.date));
 
@@ -69,9 +68,7 @@ async function computeScopedSalesAndFees(userId, scopeCategoryIds) {
       const svcDocs = await Service.find({ _id: { $in: breakdownArr.map(b => b.serviceId) } }).select('title slug').lean();
       const titleMap = new Map(svcDocs.map(s => [String(s._id), s.title || s.slug || 'Service']));
       breakdownArr.forEach(b => { b.title = titleMap.get(b.serviceId) || 'Service'; });
-    } catch (e) {
-      // swallow errors (leave titles undefined)
-    }
+    } catch {/* ignore */}
   }
   return { totalSales, totalFees, recentSales: recentSales.slice(0,20), recentFees: recentFees.slice(0,20), serviceBreakdown: breakdownArr };
 }
@@ -102,21 +99,20 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
 
     // Wallet Requests impact (approved only)
     const approved = await WalletRequest.find({ user: targetUserId, status: 'approved' }).lean();
-    const approvedTopups = approved.filter(r => r.type === 'topup').reduce((s, r) => s + (Number(r.amount) || 0), 0);
     const approvedWithdrawals = approved.filter(r => r.type === 'withdrawal').reduce((s, r) => s + (Number(r.amount) || 0), 0);
 
     const pendingCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'pending' });
     const approvedCount = approved.length;
     const rejectedCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'rejected' });
 
-    const balance = totalSales + approvedTopups - approvedWithdrawals;
+    const balance = totalSales - approvedWithdrawals;
     return res.json({
       balance,
       totalSales,
       totalDeductions: totalFees,
       netAfterDeductions: totalSales - totalFees,
       requests: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
-      recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt })) },
+      recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId, type: 'withdrawal' }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt })) },
       serviceBreakdown
     });
   } catch (e) {
@@ -130,7 +126,7 @@ router.post('/requests', adminOrCategoryManager, async (req, res) => {
   try {
     if (req.user.role !== 'categoryManager' && req.user.role !== 'admin') return res.status(403).json({ message: 'Forbidden' });
     const { type, amount, note } = req.body || {};
-    if (!['withdrawal', 'topup'].includes(String(type))) return res.status(400).json({ message: 'Invalid type' });
+    if (String(type) !== 'withdrawal') return res.status(400).json({ message: 'Invalid type' });
     const amt = Number(amount);
     if (!isFinite(amt) || amt <= 0) return res.status(400).json({ message: 'Amount must be positive' });
     // If withdrawal, ensure it does not exceed current net value (sales - service fees)
