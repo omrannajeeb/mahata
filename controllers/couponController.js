@@ -222,14 +222,24 @@ export const validateCoupon = async (req, res) => {
       return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Coupon usage limit reached' });
     }
 
+    // Calculate discount. For restricted coupons, do not allow a fixed amount
+    // to exceed the eligible subtotal; leftover value is discarded.
     let discount = 0;
+    const isRestrictedScope = (hasProductRestrictions || hasCategoryRestrictions);
     if (coupon.type === 'percentage') {
       discount = (baseAmount * coupon.value) / 100;
       if (coupon.maxDiscount) {
         discount = Math.min(discount, coupon.maxDiscount);
       }
-    } else {
+    } else { // fixed
       discount = coupon.value;
+      if (isRestrictedScope) {
+        // Cap discount to eligible subtotal so it does not spill to non-eligible items
+        discount = Math.min(discount, baseAmount);
+      }
+      if (coupon.maxDiscount) {
+        discount = Math.min(discount, coupon.maxDiscount);
+      }
     }
 
     res.json({ 
