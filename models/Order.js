@@ -6,6 +6,11 @@ const orderSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  // Applied coupon snapshot (captured at order creation for analytics)
+  coupon: {
+    code: { type: String, index: true },
+    discount: { type: Number, default: 0 }
+  },
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'

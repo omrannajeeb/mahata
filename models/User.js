@@ -52,6 +52,11 @@ const userSchema = new mongoose.Schema({
     enum: ['user', 'admin', 'categoryManager'],
     default: 'user'
   },
+  // For category managers: list of admin panel module paths they are allowed to see (e.g. '/admin', '/admin/products').
+  // If empty or undefined, fallback UI defaults will apply.
+  managerVisibleModules: [{ type: String }],
+  // Generic list of module paths hidden for this user (applies regardless of role)
+  hiddenModules: [{ type: String }],
   // For category managers: list of categories they are allowed to manage
   assignedCategories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category', index: true }],
   whatsappOptIn: {

@@ -233,7 +233,7 @@ router.get('/', adminAuth, async (req, res) => {
       statsLookup,
       addStats,
       ...( (minOrders !== null || maxOrders !== null) ? [matchOrderRange] : []),
-    { $project: { name:1, email:1, role:1, createdAt:1, image:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1 } },
+    { $project: { name:1, email:1, role:1, createdAt:1, image:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1, managerVisibleModules:1, hiddenModules:1 } },
       sortStage
     ];
 
@@ -319,7 +319,7 @@ router.get('/export', adminAuth, async (req, res) => {
   const waOptInRaw = (req.query.waOptIn || '').toString().trim().toLowerCase();
   if (waOptInRaw === 'true') match.whatsappOptIn = true;
   else if (waOptInRaw === 'false') match.whatsappOptIn = false;
-  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1 } }, sortStage ];
+  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1, managerVisibleModules:1, hiddenModules:1 } }, sortStage ];
     const users = await User.aggregate(pipeline);
 
   const header = ['Name', 'Email', 'Role', 'Phone', 'WA Opt-In', 'Last WA Contact', 'WA Preview', 'Created At', 'Order Count', 'Total Spent', 'Avg Order Value', 'Last Order'];
@@ -403,7 +403,7 @@ router.get('/export.xlsx', adminAuth, async (req, res) => {
     } };
   const rangeMatch = (minOrders !== null || maxOrders !== null) ? (() => { const r = {}; if (minOrders !== null) r.$gte = minOrders; if (maxOrders !== null) r.$lte = maxOrders; return { $match: { orderCount: r } }; })() : null;
     const sortStage = { $sort: { [sortBy]: sortDir, _id: 1 } };
-  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1 } }, sortStage ];
+  const pipeline = [ { $match: match }, statsLookup, addStats, ...(rangeMatch ? [rangeMatch] : []), { $project: { name:1, email:1, role:1, createdAt:1, orderCount:1, totalSpent:1, lastOrder:1, averageOrderValue:1, phoneNumber:1, whatsappOptIn:1, lastWhatsAppContactAt:1, lastWhatsAppMessagePreview:1, assignedCategories:1, managerVisibleModules:1, hiddenModules:1 } }, sortStage ];
     const users = await User.aggregate(pipeline);
 
     const rows = users.map(u => ({
@@ -539,6 +539,50 @@ router.patch('/:id/assigned-categories', adminAuth, async (req, res) => {
   } catch (error) {
     console.error('Error updating assigned categories:', error);
     res.status(500).json({ message: 'Failed to update assigned categories' });
+  }
+});
+
+// Admin: update manager visible modules (for categoryManager role)
+router.patch('/:id/manager-visible-modules', adminAuth, async (req, res) => {
+  try {
+    const { modules } = req.body;
+    if (!Array.isArray(modules)) {
+      return res.status(400).json({ message: 'modules array required' });
+    }
+    const u = await User.findById(req.params.id);
+    if (!u) return res.status(404).json({ message: 'User not found' });
+    if (u.role !== 'categoryManager') return res.status(400).json({ message: 'Only applicable to categoryManager role' });
+    // Sanitization: keep only strings starting with '/admin' and length < 120
+    const allowed = new Set([
+      '/admin','/admin/design','/admin/orders','/admin/products','/admin/customers','/admin/recipients','/admin/hero','/admin/featured','/admin/categories','/admin/wallet','/admin/navigation','/admin/footer','/admin/announcements','/admin/banner','/admin/background','/admin/brands','/admin/attributes','/admin/media','/admin/pages','/admin/pages/new','/admin/inventory','/admin/warehouses','/admin/flash-sales','/admin/bundle-offers','/admin/services','/admin/wallet-requests','/admin/gift-cards','/admin/coupons','/admin/delivery','/admin/shipping','/admin/analytics','/admin/reviews','/admin/notifications','/admin/database','/admin/legal-stats','/admin/policies','/admin/site-map','/admin/settings','/admin/whatsapp-audits'
+    ]);
+    const cleaned = [...new Set(modules.filter(m => typeof m === 'string' && allowed.has(m)) )];
+    u.managerVisibleModules = cleaned;
+    await u.save();
+    res.json({ message: 'Visible modules updated', user: { id: u._id, managerVisibleModules: u.managerVisibleModules } });
+  } catch (error) {
+    console.error('Error updating manager visible modules:', error);
+    res.status(500).json({ message: 'Failed to update visible modules' });
+  }
+});
+
+// Admin: update hidden modules for any user
+router.patch('/:id/hidden-modules', adminAuth, async (req, res) => {
+  try {
+    const { modules } = req.body;
+    if (!Array.isArray(modules)) return res.status(400).json({ message: 'modules array required' });
+    const u = await User.findById(req.params.id);
+    if (!u) return res.status(404).json({ message: 'User not found' });
+    // Allowed set = all currently defined admin routes paths
+    const allowed = new Set(['/admin','/admin/orders','/admin/products','/admin/categories','/admin/wallet']);
+    // Optionally expand: gather from navigationConfig dynamically (not accessible server-side without duplication)
+    const cleaned = [...new Set(modules.filter(m => typeof m === 'string' && allowed.has(m)))];
+    u.hiddenModules = cleaned;
+    await u.save();
+    res.json({ message: 'Hidden modules updated', user: { id: u._id, hiddenModules: u.hiddenModules } });
+  } catch (e) {
+    console.error('Error updating hidden modules:', e);
+    res.status(500).json({ message: 'Failed to update hidden modules' });
   }
 });
 
