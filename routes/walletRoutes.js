@@ -106,13 +106,21 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const rejectedCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'rejected' });
 
     const balance = totalSales - approvedWithdrawals;
+    const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
+    const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    // Also treat approved but not yet received withdrawals as locking further requests
+    const unreceivedApprovedExists = await WalletRequest.exists({ user: targetUserId, type: 'withdrawal', status: 'approved', receivedAt: { $exists: false } });
+    const unfinalizedExists = pendingWithdrawals.length > 0 || unreceivedApprovedExists;
+    const netAfterDeductions = totalSales - totalFees;
+    const availableNetForWithdrawal = unfinalizedExists ? 0 : Math.max(0, netAfterDeductions);
     return res.json({
       balance,
       totalSales,
       totalDeductions: totalFees,
-      netAfterDeductions: totalSales - totalFees,
+      netAfterDeductions,
+      availableNetForWithdrawal,
       requests: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
-      recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId, type: 'withdrawal' }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt })) },
+      recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId, type: 'withdrawal' }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt, receivedAt: r.receivedAt || null })) },
       serviceBreakdown
     });
   } catch (e) {
@@ -129,6 +137,9 @@ router.post('/requests', adminOrCategoryManager, async (req, res) => {
     if (String(type) !== 'withdrawal') return res.status(400).json({ message: 'Invalid type' });
     const amt = Number(amount);
     if (!isFinite(amt) || amt <= 0) return res.status(400).json({ message: 'Amount must be positive' });
+    // Prevent new withdrawal if there is a pending or an approved not yet received
+    const unfinalized = await WalletRequest.exists({ user: req.user._id, type: 'withdrawal', $or: [ { status: 'pending' }, { status: 'approved', receivedAt: { $exists: false } } ] });
+    if (unfinalized) return res.status(400).json({ message: 'You already have an unfinalized withdrawal (pending or not yet received)' });
     // If withdrawal, ensure it does not exceed current net value (sales - service fees)
     if (type === 'withdrawal' && req.user.role === 'categoryManager') {
       const scopeIds = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [];
@@ -193,6 +204,28 @@ router.put('/requests/:id/reject', adminAuth, async (req, res) => {
   } catch (e) {
     console.error('[wallet/requests:reject] error', e);
     return res.status(500).json({ message: 'Failed to reject request' });
+  }
+});
+
+// PUT /api/wallet/requests/:id/received - manager confirms they received the funds
+router.put('/requests/:id/received', adminOrCategoryManager, async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    const doc = await WalletRequest.findById(id);
+    if (!doc) return res.status(404).json({ message: 'Request not found' });
+    // Only allow the requester (category manager) to mark their own approved requests as received
+    if (String(doc.user) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
+    if (doc.status !== 'approved') return res.status(400).json({ message: 'Only approved requests can be marked received' });
+    if (doc.receivedAt) return res.status(400).json({ message: 'Already marked as received' });
+    const signature = String(req.body?.signature || '').trim();
+    if (!signature) return res.status(400).json({ message: 'Signature required' });
+    doc.receivedAt = new Date();
+    doc.receivedSignature = signature.slice(0,200);
+    await doc.save();
+    return res.json({ ok: true, request: doc });
+  } catch (e) {
+    console.error('[wallet/requests:received] error', e);
+    return res.status(500).json({ message: 'Failed to mark request as received' });
   }
 });
 
