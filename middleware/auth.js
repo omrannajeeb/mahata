@@ -108,6 +108,7 @@ export const enforceCategoryScopeByBodyIds = (picker) => async (req, res, next) 
 
 // Ensure a product id is within the manager's category scope
 import Product from '../models/Product.js';
+import Category from '../models/Category.js';
 export const enforceProductScopeById = async (req, res, next) => {
   try {
     if (!req.user || req.user.role === 'admin') return next();
@@ -150,11 +151,24 @@ export const constrainQueryToAssignedCategories = (req, res, next) => {
 };
 
 // Ensure a product creation/update payload references only categories in scope
-export const enforceProductScopeByBody = (req, res, next) => {
+export const enforceProductScopeByBody = async (req, res, next) => {
   try {
     if (!req.user || req.user.role === 'admin') return next();
     if (req.user.role !== 'categoryManager') return res.status(403).json({ message: 'Forbidden' });
-    const allowed = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds : (Array.isArray(req.user.assignedCategories) ? req.user.assignedCategories.map(x=>x.toString()) : []);
+    let allowed = Array.isArray(req.categoryScopeIds)
+      ? req.categoryScopeIds.map(String)
+      : (Array.isArray(req.user.assignedCategories) ? req.user.assignedCategories.map(x=>x.toString()) : []);
+    // Expand scope to include descendants of assigned categories so managers can create products under subcategories
+    if (allowed.length) {
+      try {
+        const descendants = await Category.find({ ancestors: { $in: allowed } }).select('_id').lean();
+        const subs = await Category.find({ parent: { $in: allowed } }).select('_id').lean();
+        const extraIds = [...descendants, ...subs].map(d => d._id.toString());
+        allowed = Array.from(new Set([...allowed, ...extraIds]));
+      } catch (expErr) {
+        console.warn('[scope] failed expanding descendant categories', expErr?.message || expErr);
+      }
+    }
     const primary = req.body?.category ? [String(req.body.category)] : [];
     const extras = Array.isArray(req.body?.categories) ? req.body.categories.map((x)=> String(x)) : [];
     const all = [...new Set([...primary, ...extras])];
