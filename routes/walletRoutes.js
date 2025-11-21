@@ -2,6 +2,7 @@ import express from 'express';
 import { adminAuth, adminOrCategoryManager } from '../middleware/auth.js';
 import Order from '../models/Order.js';
 import Product from '../models/Product.js';
+import Service from '../models/Service.js';
 import WalletRequest from '../models/WalletRequest.js';
 
 const router = express.Router();
@@ -39,6 +40,7 @@ async function computeScopedSalesAndFees(userId, scopeCategoryIds) {
   // Service fees (categoryServiceCharges) linked to this manager and in scope categories
   let totalFees = 0;
   const recentFees = [];
+  const feeByService = new Map(); // serviceId -> { totalFee, serviceId }
   for (const o of orders) {
     const charges = Array.isArray(o.categoryServiceCharges) ? o.categoryServiceCharges : [];
     for (const sc of charges) {
@@ -48,6 +50,10 @@ async function computeScopedSalesAndFees(userId, scopeCategoryIds) {
       if (fee > 0) {
         totalFees += fee;
         recentFees.push({ orderId: String(o._id), amount: fee, service: String(sc.service), category: String(sc.category || ''), date: o.createdAt });
+        const sid = String(sc.service);
+        const prev = feeByService.get(sid) || { totalFee: 0, serviceId: sid };
+        prev.totalFee += fee;
+        feeByService.set(sid, prev);
       }
     }
   }
@@ -56,7 +62,18 @@ async function computeScopedSalesAndFees(userId, scopeCategoryIds) {
   recentSales.sort((a,b)=> new Date(b.date) - new Date(a.date));
   recentFees.sort((a,b)=> new Date(b.date) - new Date(a.date));
 
-  return { totalSales, totalFees, recentSales: recentSales.slice(0,20), recentFees: recentFees.slice(0,20) };
+  // Resolve service titles for breakdown
+  const breakdownArr = Array.from(feeByService.values());
+  if (breakdownArr.length) {
+    try {
+      const svcDocs = await Service.find({ _id: { $in: breakdownArr.map(b => b.serviceId) } }).select('title slug').lean();
+      const titleMap = new Map(svcDocs.map(s => [String(s._id), s.title || s.slug || 'Service']));
+      breakdownArr.forEach(b => { b.title = titleMap.get(b.serviceId) || 'Service'; });
+    } catch (e) {
+      // swallow errors (leave titles undefined)
+    }
+  }
+  return { totalSales, totalFees, recentSales: recentSales.slice(0,20), recentFees: recentFees.slice(0,20), serviceBreakdown: breakdownArr };
 }
 
 // GET /api/wallet/me - summary for current category manager
@@ -81,7 +98,7 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
       targetUserId = qUser;
     }
 
-    const { totalSales, totalFees, recentSales, recentFees } = await computeScopedSalesAndFees(targetUserId, scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : []));
+    const { totalSales, totalFees, recentSales, recentFees, serviceBreakdown } = await computeScopedSalesAndFees(targetUserId, scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : []));
 
     // Wallet Requests impact (approved only)
     const approved = await WalletRequest.find({ user: targetUserId, status: 'approved' }).lean();
@@ -99,7 +116,8 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
       totalDeductions: totalFees,
       netAfterDeductions: totalSales - totalFees,
       requests: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
-      recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt })) }
+      recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt })) },
+      serviceBreakdown
     });
   } catch (e) {
     console.error('[wallet/me] error', e);
@@ -115,6 +133,15 @@ router.post('/requests', adminOrCategoryManager, async (req, res) => {
     if (!['withdrawal', 'topup'].includes(String(type))) return res.status(400).json({ message: 'Invalid type' });
     const amt = Number(amount);
     if (!isFinite(amt) || amt <= 0) return res.status(400).json({ message: 'Amount must be positive' });
+    // If withdrawal, ensure it does not exceed current net value (sales - service fees)
+    if (type === 'withdrawal' && req.user.role === 'categoryManager') {
+      const scopeIds = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [];
+      const { totalSales, totalFees } = await computeScopedSalesAndFees(req.user._id, scopeIds);
+      const net = Math.max(0, totalSales - totalFees);
+      if (amt > net) {
+        return res.status(400).json({ message: 'Withdrawal amount exceeds available net value' });
+      }
+    }
     const doc = await WalletRequest.create({ user: req.user._id, type, amount: amt, note: note || '' });
     return res.status(201).json({ ok: true, request: doc });
   } catch (e) {
