@@ -142,12 +142,36 @@ export const getTopProductsByRevenue = asyncHandler(async (req, res) => {
   const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
   const analytics = await revenueAnalyticsService.getRevenueAnalytics({ start, end });
+  let products = analytics.topProducts;
 
+  // Scope filtering for category managers when requested
+  if (req.user && req.user.role === 'categoryManager' && (req.query.scope === 'manager' || req.query.scope === 'assigned')) {
+    try {
+      const Product = (await import('../models/Product.js')).default;
+      const ids = products.map(p => p.productId).filter(Boolean);
+      const prodDocs = await Product.find({ _id: { $in: ids } }).select('category categories').lean();
+      const scopeIds = Array.isArray(req.user.assignedCategories) ? req.user.assignedCategories.map(c => String(c)) : [];
+      const allowedSet = new Set(scopeIds);
+      const docMap = new Map(prodDocs.map(d => [String(d._id), d]));
+      products = products.filter(p => {
+        const d = docMap.get(String(p.productId));
+        if (!d) return false;
+        const cats = [d.category, ...(Array.isArray(d.categories)?d.categories:[])]
+          .filter(Boolean).map(c=>String(c));
+        return cats.some(c => allowedSet.has(c));
+      });
+    } catch (scopeErr) {
+      console.warn('[revenue/products] scope filter failed', scopeErr?.message || scopeErr);
+      products = []; // fail closed to avoid leaking data out of scope
+    }
+  }
+
+  const lim = parseInt(limit);
   res.status(StatusCodes.OK).json({
     success: true,
     data: {
-      products: analytics.topProducts.slice(0, parseInt(limit)),
-      totalProducts: analytics.topProducts.length,
+      products: products.slice(0, lim),
+      totalProducts: products.length,
       period: {
         start: start.toISOString(),
         end: end.toISOString()

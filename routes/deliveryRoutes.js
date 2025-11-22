@@ -1,5 +1,5 @@
 import express from 'express';
-import { auth, adminAuth } from '../middleware/auth.js';
+import { auth, adminAuth, adminOrCategoryManager } from '../middleware/auth.js';
 import {
   listCompanies,
   listActiveCompanies,
@@ -22,6 +22,37 @@ import {
 } from '../controllers/deliveryController.js';
 
 const router = express.Router();
+
+// Delivery stats (delivered orders count scoped by category manager categories)
+router.get('/stats', adminOrCategoryManager, async (req, res) => {
+  try {
+    const OrderModel = (await import('../models/Order.js')).default;
+    const Product = (await import('../models/Product.js')).default;
+    const orders = await OrderModel.find({ status: { $in: ['delivered','shipped','processing','pending'] } }).select('status items.product').lean();
+    if (req.user.role === 'admin' || !req.categoryScopeIds) {
+      const delivered = orders.filter(o => o.status === 'delivered');
+      return res.json({ delivered: delivered.length });
+    }
+    const scopeIds = req.categoryScopeIds.map(String);
+    const productIds = Array.from(new Set(orders.flatMap(o => (o.items||[]).map(i => String(i.product)))));
+    const prodDocs = await Product.find({ _id: { $in: productIds } }).select('category categories').lean();
+    const prodMap = new Map(prodDocs.map(p => [String(p._id), p]));
+    let deliveredCount = 0;
+    for (const o of orders) {
+      if (o.status !== 'delivered') continue;
+      for (const it of (o.items || [])) {
+        const p = prodMap.get(String(it.product));
+        if (!p) continue;
+        const cats = [p.category, ...(Array.isArray(p.categories)?p.categories:[])].filter(Boolean).map(c=>String(c));
+        if (cats.some(c => scopeIds.includes(c))) { deliveredCount++; break; }
+      }
+    }
+    return res.json({ delivered: deliveredCount });
+  } catch (e) {
+    console.error('[delivery/stats] error', e);
+    res.status(500).json({ message: 'Failed to compute delivery stats' });
+  }
+});
 
 // Conditional admin guard for development/testing without tokens
 const deliveryAdminGuard = (req, res, next) => {
