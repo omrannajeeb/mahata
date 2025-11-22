@@ -145,6 +145,10 @@ export const getTopProductsByRevenue = asyncHandler(async (req, res) => {
   let products = analytics.topProducts;
 
   // Scope filtering for category managers when requested
+  const debug = req.query.debug === '1' || req.query.debug === 'true';
+  const fallback = req.query.fallback === '1' || req.query.fallback === 'true';
+  let debugInfo = undefined;
+
   if (req.user && req.user.role === 'categoryManager' && (req.query.scope === 'manager' || req.query.scope === 'assigned')) {
     try {
       const Product = (await import('../models/Product.js')).default;
@@ -153,13 +157,31 @@ export const getTopProductsByRevenue = asyncHandler(async (req, res) => {
       const scopeIds = Array.isArray(req.user.assignedCategories) ? req.user.assignedCategories.map(c => String(c)) : [];
       const allowedSet = new Set(scopeIds);
       const docMap = new Map(prodDocs.map(d => [String(d._id), d]));
-      products = products.filter(p => {
+      let filtered = [];
+      debugInfo = [];
+      for (const p of products) {
         const d = docMap.get(String(p.productId));
-        if (!d) return false;
+        if (!d) {
+          if (debug) debugInfo.push({ productId: p.productId, name: p.name, reason: 'docMissing' });
+          continue;
+        }
         const cats = [d.category, ...(Array.isArray(d.categories)?d.categories:[])]
           .filter(Boolean).map(c=>String(c));
-        return cats.some(c => allowedSet.has(c));
-      });
+        const inScope = cats.some(c => allowedSet.has(c));
+        if (inScope) {
+          filtered.push(p);
+          if (debug) debugInfo.push({ productId: p.productId, name: p.name, matchedCategories: cats.filter(c=>allowedSet.has(c)), allCategories: cats });
+        } else if (debug) {
+          debugInfo.push({ productId: p.productId, name: p.name, reason: 'outOfScope', allCategories: cats });
+        }
+      }
+      // Fallback to global products when none match and requested
+      if (!filtered.length && fallback) {
+        if (debug) debugInfo.push({ reason: 'fallbackToGlobal' });
+        products = products; // unchanged global list
+      } else {
+        products = filtered;
+      }
     } catch (scopeErr) {
       console.warn('[revenue/products] scope filter failed', scopeErr?.message || scopeErr);
       products = []; // fail closed to avoid leaking data out of scope
@@ -175,7 +197,8 @@ export const getTopProductsByRevenue = asyncHandler(async (req, res) => {
       period: {
         start: start.toISOString(),
         end: end.toISOString()
-      }
+      },
+      debug: debug ? debugInfo : undefined
     }
   });
 });
