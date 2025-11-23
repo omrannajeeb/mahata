@@ -106,7 +106,8 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const rejectedCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'rejected' });
 
     // Balance reflects sales minus already approved (regardless of receipt) withdrawals
-    const balance = totalSales - approvedWithdrawals;
+    // Net balance (sales - fees - approved withdrawals). This reflects actual remaining value.
+    const balance = Math.max(0, (totalSales - totalFees) - approvedWithdrawals);
     const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
     const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
     // Also treat approved but not yet received withdrawals as locking further requests
