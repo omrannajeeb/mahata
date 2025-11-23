@@ -9,8 +9,9 @@ const router = express.Router();
 
 // Helper to compute scoped sales & fees for a manager based on assigned categories.
 // Aligned with /orders/manage logic so wallet figures match dashboard cards.
-async function computeScopedSalesAndFees(_userId, scopeCategoryIds) {
-  const orders = await Order.find().lean();
+// sinceDate (optional): if provided, only include orders created after this date (used to "reset" wallet figures after last approved withdrawal)
+async function computeScopedSalesAndFees(_userId, scopeCategoryIds, sinceDate = null) {
+  const orders = await Order.find(sinceDate ? { createdAt: { $gt: sinceDate } } : {}).lean();
   if (!orders.length || !scopeCategoryIds.length) return { totalSales: 0, totalFees: 0, recentSales: [], recentFees: [], serviceBreakdown: [] };
 
   // Build product map for category lookup
@@ -95,10 +96,25 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
       targetUserId = qUser;
     }
 
-    const { totalSales, totalFees, recentSales, recentFees, serviceBreakdown } = await computeScopedSalesAndFees(targetUserId, scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : []));
+    // Determine reset date: for category managers, use processedAt of the last approved withdrawal
+    let sinceDate = null;
+    if (role === 'categoryManager') {
+      try {
+        const lastApproved = await WalletRequest.findOne({ user: targetUserId, status: 'approved' }).sort({ processedAt: -1 }).select('processedAt').lean();
+        if (lastApproved?.processedAt) sinceDate = lastApproved.processedAt;
+      } catch {/* ignore */}
+    }
+
+    const { totalSales, totalFees, recentSales, recentFees, serviceBreakdown } = await computeScopedSalesAndFees(
+      targetUserId,
+      scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : []),
+      sinceDate
+    );
 
     // Wallet Requests impact (approved only)
-    const approved = await WalletRequest.find({ user: targetUserId, status: 'approved' }).lean();
+    const approvedQuery = { user: targetUserId, status: 'approved' };
+    if (sinceDate) approvedQuery.processedAt = { $gt: sinceDate }; // only count approvals after reset point
+    const approved = await WalletRequest.find(approvedQuery).lean();
     const approvedWithdrawals = approved.filter(r => r.type === 'withdrawal').reduce((s, r) => s + (Number(r.amount) || 0), 0);
 
     const pendingCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'pending' });
@@ -143,7 +159,13 @@ router.post('/requests', adminOrCategoryManager, async (req, res) => {
     // If withdrawal, ensure it does not exceed current net value (sales - service fees)
     if (type === 'withdrawal' && req.user.role === 'categoryManager') {
       const scopeIds = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [];
-      const { totalSales, totalFees } = await computeScopedSalesAndFees(req.user._id, scopeIds);
+      // When creating a new withdrawal request, use post-reset figures (after last approved withdrawal)
+      let sinceDate = null;
+      try {
+        const lastApproved = await WalletRequest.findOne({ user: req.user._id, status: 'approved' }).sort({ processedAt: -1 }).select('processedAt').lean();
+        if (lastApproved?.processedAt) sinceDate = lastApproved.processedAt;
+      } catch {/* ignore */}
+      const { totalSales, totalFees } = await computeScopedSalesAndFees(req.user._id, scopeIds, sinceDate);
       const net = Math.max(0, totalSales - totalFees);
       if (amt > net) {
         return res.status(400).json({ message: 'Withdrawal amount exceeds available net value' });
