@@ -105,6 +105,7 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const approvedCount = approved.length;
     const rejectedCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'rejected' });
 
+    // Balance reflects sales minus already approved (regardless of receipt) withdrawals
     const balance = totalSales - approvedWithdrawals;
     const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
     const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
@@ -112,7 +113,10 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const unreceivedApprovedExists = await WalletRequest.exists({ user: targetUserId, type: 'withdrawal', status: 'approved', receivedAt: { $exists: false } });
     const unfinalizedExists = pendingWithdrawals.length > 0 || unreceivedApprovedExists;
     const netAfterDeductions = totalSales - totalFees;
-    const availableNetForWithdrawal = unfinalizedExists ? 0 : Math.max(0, netAfterDeductions);
+    // Remaining net after previously approved withdrawals. Prevent requesting amounts already withdrawn.
+    const remainingNetAfterWithdrawals = Math.max(0, netAfterDeductions - approvedWithdrawals);
+    // Only allow a new withdrawal if no unfinalized request exists
+    const availableNetForWithdrawal = unfinalizedExists ? 0 : remainingNetAfterWithdrawals;
     return res.json({
       balance,
       totalSales,
@@ -140,13 +144,16 @@ router.post('/requests', adminOrCategoryManager, async (req, res) => {
     // Prevent new withdrawal if there is a pending or an approved not yet received
     const unfinalized = await WalletRequest.exists({ user: req.user._id, type: 'withdrawal', $or: [ { status: 'pending' }, { status: 'approved', receivedAt: { $exists: false } } ] });
     if (unfinalized) return res.status(400).json({ message: 'You already have an unfinalized withdrawal (pending or not yet received)' });
-    // If withdrawal, ensure it does not exceed current net value (sales - service fees)
+    // If withdrawal, ensure it does not exceed remaining net value (sales - service fees - prior approved withdrawals)
     if (type === 'withdrawal' && req.user.role === 'categoryManager') {
       const scopeIds = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [];
       const { totalSales, totalFees } = await computeScopedSalesAndFees(req.user._id, scopeIds);
       const net = Math.max(0, totalSales - totalFees);
-      if (amt > net) {
-        return res.status(400).json({ message: 'Withdrawal amount exceeds available net value' });
+      const approvedPrev = await WalletRequest.find({ user: req.user._id, type: 'withdrawal', status: 'approved' }).select('amount').lean();
+      const approvedSum = approvedPrev.reduce((s,r)=> s + (Number(r.amount)||0), 0);
+      const remaining = Math.max(0, net - approvedSum);
+      if (amt > remaining) {
+        return res.status(400).json({ message: 'Withdrawal amount exceeds remaining available net value' });
       }
     }
     const doc = await WalletRequest.create({ user: req.user._id, type, amount: amt, note: note || '' });
