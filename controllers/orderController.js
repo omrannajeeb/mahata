@@ -824,9 +824,8 @@ export const updateOrderStatus = async (req, res) => {
     }
     const prevStatus = order.status;
 
-    // Update status
+    // Update status (delay save until after inventory adjustments so flags persist)
     order.status = status;
-    await order.save();
 
     // Inventory configuration driven stock adjustments
     let invCfg = null;
@@ -868,6 +867,9 @@ export const updateOrderStatus = async (req, res) => {
     if (status === 'returned' && prevStatus !== status && invCfg?.autoIncrementOnReturn) {
       try { await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order returned'); } catch (e) { console.warn('Return increment failed:', e?.message || e); }
     }
+
+    // Persist any flag changes from inventory adjustments
+    try { await order.save(); } catch (e) { console.warn('Order save after inventory adjustments failed:', e?.message || e); }
 
     // Emit real-time event for order update
     realTimeEventService.emitOrderUpdate(order);
