@@ -108,13 +108,15 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const approvedCount = approved.length;
     const rejectedCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'rejected' });
 
-    const balance = totalSales - approvedWithdrawals;
+    // Balance should reflect net after service deductions minus any approved withdrawals
+    const netAfterDeductions = totalSales - totalFees;
+    const balance = Math.max(0, netAfterDeductions - approvedWithdrawals);
     const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
     const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
     const approvedUnreceived = await WalletRequest.find({ user: targetUserId, status: 'approved', type: 'withdrawal', receivedAt: { $exists: false } }).select('amount').lean();
     const approvedUnreceivedSum = approvedUnreceived.reduce((s, r) => s + (Number(r.amount) || 0), 0);
     const approvedTotalWithdrawals = approved.filter(r => r.type === 'withdrawal').reduce((s,r)=> s + (Number(r.amount)||0), 0);
-    const netAfterDeductions = totalSales - totalFees;
+    // netAfterDeductions already computed above
     // Funds already fully withdrawn (approved) reduce availability; pending & unreceived additionally lock remainder
     const lockedAmount = pendingWithdrawalsSum + approvedUnreceivedSum;
     const availableNetForWithdrawal = Math.max(0, netAfterDeductions - approvedTotalWithdrawals - pendingWithdrawalsSum);
