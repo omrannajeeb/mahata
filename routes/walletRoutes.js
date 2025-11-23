@@ -124,17 +124,19 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const balance = totalSales - approvedWithdrawals;
     const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
     const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    // Also treat approved but not yet received withdrawals as locking further requests
-    const unreceivedApprovedExists = await WalletRequest.exists({ user: targetUserId, type: 'withdrawal', status: 'approved', receivedAt: { $exists: false } });
-    const unfinalizedExists = pendingWithdrawals.length > 0 || unreceivedApprovedExists;
+    // Approved but not yet received withdrawals also lock funds
+    const unreceivedApproved = await WalletRequest.find({ user: targetUserId, type: 'withdrawal', status: 'approved', receivedAt: { $exists: false } }).select('amount').lean();
+    const unreceivedApprovedSum = unreceivedApproved.reduce((s, r) => s + (Number(r.amount) || 0), 0);
     const netAfterDeductions = totalSales - totalFees;
-    const availableNetForWithdrawal = unfinalizedExists ? 0 : Math.max(0, netAfterDeductions);
+    const lockedAmount = pendingWithdrawalsSum + unreceivedApprovedSum;
+    const availableNetForWithdrawal = Math.max(0, netAfterDeductions - lockedAmount);
     return res.json({
       balance,
       totalSales,
       totalDeductions: totalFees,
       netAfterDeductions,
       availableNetForWithdrawal,
+      lockedAmount,
       requests: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
       recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId, type: 'withdrawal' }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt, receivedAt: r.receivedAt || null })) },
       serviceBreakdown
