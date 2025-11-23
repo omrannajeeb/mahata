@@ -863,6 +863,16 @@ export const updateOrderStatus = async (req, res) => {
       } catch (e) { console.warn('Re-reserve after cancel failed:', e?.message || e); }
     }
 
+    // If order was cancelled BEFORE any initial decrement (store configured not to decrement on create),
+    // and we now move it back to pending, we still need to decrement inventory once.
+    // This covers the case where reserveOnCheckout / autoDecrementOnOrder are disabled, so stock was untouched.
+    if (status === 'pending' && prevStatus === 'cancelled' && !decrementedAtOrder && !order.inventoryReReservedAfterRestore) {
+      try {
+        await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null);
+        order.inventoryReReservedAfterRestore = true; // reuse same flag to prevent double decrement
+      } catch (e) { console.warn('Pending reactivation decrement (no initial decrement) failed:', e?.message || e); }
+    }
+
     // Auto-increment on returned
     if (status === 'returned' && prevStatus !== status && invCfg?.autoIncrementOnReturn) {
       try { await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order returned'); } catch (e) { console.warn('Return increment failed:', e?.message || e); }
