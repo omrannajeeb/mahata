@@ -200,6 +200,9 @@ const orderSchema = new mongoose.Schema({
     type: String
   }
   ,
+  // Inventory adjustment flags
+  inventoryRestoredOnCancel: { type: Boolean, default: false },
+  inventoryReReservedAfterRestore: { type: Boolean, default: false },
   // Applied category service charges (not paid by customer). Kept separately for accounting.
   categoryServiceCharges: [{
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },

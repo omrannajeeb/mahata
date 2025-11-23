@@ -849,7 +849,19 @@ export const updateOrderStatus = async (req, res) => {
 
     // Auto-increment on cancel if it was decremented earlier
     if (status === 'cancelled' && prevStatus !== status && invCfg?.autoIncrementOnCancel && decrementedAtOrder) {
-      try { await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order cancelled'); } catch (e) { console.warn('Cancel increment failed:', e?.message || e); }
+      try {
+        await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order cancelled');
+        order.inventoryRestoredOnCancel = true;
+      } catch (e) { console.warn('Cancel increment failed:', e?.message || e); }
+    }
+
+    // Re-reserve inventory exactly once if order is reinstated after cancellation
+    const reinstatedStatuses = ['pending', 'processing', 'shipped'];
+    if (reinstatedStatuses.includes(status) && prevStatus === 'cancelled' && order.inventoryRestoredOnCancel && !order.inventoryReReservedAfterRestore && decrementedAtOrder) {
+      try {
+        await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null);
+        order.inventoryReReservedAfterRestore = true;
+      } catch (e) { console.warn('Re-reserve after cancel failed:', e?.message || e); }
     }
 
     // Auto-increment on returned
