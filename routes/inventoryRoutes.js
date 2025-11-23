@@ -1,7 +1,7 @@
 
 import express from 'express';
 import { adminAuth, adminOrCategoryManager } from '../middleware/auth.js';
-import { updateInventoryByProductColorSize, getInventory, getProductInventory, updateInventory, addInventory, getLowStockItems, bulkUpdateInventory, moveStockBetweenWarehouses, updateInventoryByVariant, getVariantStockSummary } from '../controllers/inventoryController.js';
+import { updateInventoryByProductColorSize, getInventory, getProductInventory, updateInventory, addInventory, getLowStockItems, bulkUpdateInventory, moveStockBetweenWarehouses, updateInventoryByVariant, getVariantStockSummary, getInventoryHistory } from '../controllers/inventoryController.js';
 import { getInventoryAnalytics, getStockMovements, getTurnoverAnalysis, getCategoryBreakdown, getLocationAnalysis, getInventoryAlerts, exportInventoryAnalytics, getPredictiveAnalytics, getSeasonalAnalysis, getCostAnalysis, getSupplierPerformance, getAdvancedMetrics } from '../controllers/inventoryAnalyticsController.js';
 
 const router = express.Router();
@@ -34,6 +34,7 @@ router.put('/by-combo', adminAuth, updateInventoryByProductColorSize);
 router.get('/', adminAuth, getInventory);
 router.get('/product/:productId', adminAuth, getProductInventory);
 router.get('/product/:productId/variants/summary', adminAuth, getVariantStockSummary);
+router.get('/product/:productId/history', adminAuth, getInventoryHistory);
 router.get('/low-stock', adminAuth, getLowStockItems);
 router.post('/', adminAuth, addInventory);
 // IMPORTANT: Register specific routes BEFORE generic param routes like '/:id'
