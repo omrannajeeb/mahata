@@ -95,10 +95,7 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
       targetUserId = qUser;
     }
 
-    const { totalSales, totalFees, recentSales, recentFees, serviceBreakdown } = await computeScopedSalesAndFees(
-      targetUserId,
-      scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [])
-    );
+    const { totalSales, totalFees, recentSales, recentFees, serviceBreakdown } = await computeScopedSalesAndFees(targetUserId, scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : []));
 
     // Wallet Requests impact (approved only)
     const approved = await WalletRequest.find({ user: targetUserId, status: 'approved' }).lean();
@@ -108,25 +105,20 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const approvedCount = approved.length;
     const rejectedCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'rejected' });
 
-    // Balance should reflect net after service deductions minus any approved withdrawals
-    const netAfterDeductions = totalSales - totalFees;
-    const balance = Math.max(0, netAfterDeductions - approvedWithdrawals);
+    const balance = totalSales - approvedWithdrawals;
     const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
     const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const approvedUnreceived = await WalletRequest.find({ user: targetUserId, status: 'approved', type: 'withdrawal', receivedAt: { $exists: false } }).select('amount').lean();
-    const approvedUnreceivedSum = approvedUnreceived.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const approvedTotalWithdrawals = approved.filter(r => r.type === 'withdrawal').reduce((s,r)=> s + (Number(r.amount)||0), 0);
-    // netAfterDeductions already computed above
-    // Funds already fully withdrawn (approved) reduce availability; pending & unreceived additionally lock remainder
-    const lockedAmount = pendingWithdrawalsSum + approvedUnreceivedSum;
-    const availableNetForWithdrawal = Math.max(0, netAfterDeductions - approvedTotalWithdrawals - pendingWithdrawalsSum);
+    // Also treat approved but not yet received withdrawals as locking further requests
+    const unreceivedApprovedExists = await WalletRequest.exists({ user: targetUserId, type: 'withdrawal', status: 'approved', receivedAt: { $exists: false } });
+    const unfinalizedExists = pendingWithdrawals.length > 0 || unreceivedApprovedExists;
+    const netAfterDeductions = totalSales - totalFees;
+    const availableNetForWithdrawal = unfinalizedExists ? 0 : Math.max(0, netAfterDeductions);
     return res.json({
       balance,
       totalSales,
       totalDeductions: totalFees,
       netAfterDeductions,
       availableNetForWithdrawal,
-      lockedAmount, // pending + approved not yet received
       requests: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
       recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId, type: 'withdrawal' }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt, receivedAt: r.receivedAt || null })) },
       serviceBreakdown
@@ -151,13 +143,7 @@ router.post('/requests', adminOrCategoryManager, async (req, res) => {
     // If withdrawal, ensure it does not exceed current net value (sales - service fees)
     if (type === 'withdrawal' && req.user.role === 'categoryManager') {
       const scopeIds = Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [];
-      // When creating a new withdrawal request, use post-reset figures (after last approved withdrawal)
-      let sinceDate = null;
-      try {
-        const lastApproved = await WalletRequest.findOne({ user: req.user._id, status: 'approved' }).sort({ processedAt: -1 }).select('processedAt').lean();
-        if (lastApproved?.processedAt) sinceDate = lastApproved.processedAt;
-      } catch {/* ignore */}
-      const { totalSales, totalFees } = await computeScopedSalesAndFees(req.user._id, scopeIds, sinceDate);
+      const { totalSales, totalFees } = await computeScopedSalesAndFees(req.user._id, scopeIds);
       const net = Math.max(0, totalSales - totalFees);
       if (amt > net) {
         return res.status(400).json({ message: 'Withdrawal amount exceeds available net value' });
