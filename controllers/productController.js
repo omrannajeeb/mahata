@@ -28,6 +28,21 @@ export const getProductStock = async (req, res) => {
   try {
     const product = await Product.findById(productId).lean();
     if (!product) return res.status(404).json({ message: 'Product not found' });
+    // Always derive authoritative stock from Inventory collection to avoid stale product.stock
+    let inventoryRows = [];
+    try {
+      inventoryRows = await Inventory.find({ product: product._id }).select('quantity variantId').lean();
+    } catch {
+      inventoryRows = [];
+    }
+    const totalInventoryQty = inventoryRows.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+    const variantInventoryMap = new Map();
+    for (const r of inventoryRows) {
+      if (r.variantId) {
+        const k = String(r.variantId);
+        variantInventoryMap.set(k, (variantInventoryMap.get(k) || 0) + (Number(r.quantity) || 0));
+      }
+    }
 
     // Legacy size extraction from colors.sizes
     const legacySizes = Array.isArray(product.colors)
@@ -41,7 +56,8 @@ export const getProductStock = async (req, res) => {
     const response = {
       productId: product._id,
       name: product.name,
-      stock: Number(product.stock) || 0,
+      stock: totalInventoryQty, // unified stock value from inventory rows
+      stockSource: 'inventory',
       sizes: legacySizes
     };
 
@@ -51,7 +67,7 @@ export const getProductStock = async (req, res) => {
         index: i,
         id: v._id,
         sku: v.sku,
-        stock: Number(v.stock) || 0,
+        stock: variantInventoryMap.get(String(v._id)) || 0,
         price: v.price != null ? v.price : product.price,
         originalPrice: v.originalPrice != null ? v.originalPrice : product.originalPrice
       }));
@@ -77,10 +93,11 @@ export const getProductStock = async (req, res) => {
           index: resolvedIndex,
           id: variant._id,
           sku: variant.sku,
-          stock: Number(variant.stock) || 0,
+          stock: variantInventoryMap.get(String(variant._id)) || 0,
           price: variant.price != null ? variant.price : product.price,
           originalPrice: variant.originalPrice != null ? variant.originalPrice : product.originalPrice,
-          images: Array.isArray(variant.images) && variant.images.length ? variant.images : undefined
+          images: Array.isArray(variant.images) && variant.images.length ? variant.images : undefined,
+          stockSource: 'inventory'
         };
       } else {
         response.selectedVariant = null;
@@ -660,6 +677,11 @@ export const getProduct = async (req, res) => {
     const inventory = await Inventory.find({ product: product._id });
     const productObj = product.toObject();
     productObj.inventory = inventory;
+    try {
+      const totalInv = inventory.reduce((s,i)=> s + (Number(i.quantity)||0), 0);
+      productObj.stock = totalInv; // authoritative unified stock
+      productObj.stockSource = 'inventory';
+    } catch {}
 
     // Attach active flashPrice for this product (either explicit or via category sale)
     try {
