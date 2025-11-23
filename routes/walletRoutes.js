@@ -9,9 +9,8 @@ const router = express.Router();
 
 // Helper to compute scoped sales & fees for a manager based on assigned categories.
 // Aligned with /orders/manage logic so wallet figures match dashboard cards.
-// sinceDate (optional): if provided, only include orders created after this date (used to "reset" wallet figures after last approved withdrawal)
-async function computeScopedSalesAndFees(_userId, scopeCategoryIds, sinceDate = null) {
-  const orders = await Order.find(sinceDate ? { createdAt: { $gt: sinceDate } } : {}).lean();
+async function computeScopedSalesAndFees(_userId, scopeCategoryIds) {
+  const orders = await Order.find().lean();
   if (!orders.length || !scopeCategoryIds.length) return { totalSales: 0, totalFees: 0, recentSales: [], recentFees: [], serviceBreakdown: [] };
 
   // Build product map for category lookup
@@ -96,25 +95,13 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
       targetUserId = qUser;
     }
 
-    // Determine reset date: for category managers, use processedAt of the last approved withdrawal
-    let sinceDate = null;
-    if (role === 'categoryManager') {
-      try {
-        const lastApproved = await WalletRequest.findOne({ user: targetUserId, status: 'approved' }).sort({ processedAt: -1 }).select('processedAt').lean();
-        if (lastApproved?.processedAt) sinceDate = lastApproved.processedAt;
-      } catch {/* ignore */}
-    }
-
     const { totalSales, totalFees, recentSales, recentFees, serviceBreakdown } = await computeScopedSalesAndFees(
       targetUserId,
-      scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : []),
-      sinceDate
+      scopeIds.length ? scopeIds : (Array.isArray(req.categoryScopeIds) ? req.categoryScopeIds.map(String) : [])
     );
 
     // Wallet Requests impact (approved only)
-    const approvedQuery = { user: targetUserId, status: 'approved' };
-    if (sinceDate) approvedQuery.processedAt = { $gt: sinceDate }; // only count approvals after reset point
-    const approved = await WalletRequest.find(approvedQuery).lean();
+    const approved = await WalletRequest.find({ user: targetUserId, status: 'approved' }).lean();
     const approvedWithdrawals = approved.filter(r => r.type === 'withdrawal').reduce((s, r) => s + (Number(r.amount) || 0), 0);
 
     const pendingCount = await WalletRequest.countDocuments({ user: targetUserId, status: 'pending' });
@@ -124,19 +111,20 @@ router.get('/me', adminOrCategoryManager, async (req, res) => {
     const balance = totalSales - approvedWithdrawals;
     const pendingWithdrawals = await WalletRequest.find({ user: targetUserId, status: 'pending', type: 'withdrawal' }).select('amount').lean();
     const pendingWithdrawalsSum = pendingWithdrawals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    // Approved but not yet received withdrawals also lock funds
-    const unreceivedApproved = await WalletRequest.find({ user: targetUserId, type: 'withdrawal', status: 'approved', receivedAt: { $exists: false } }).select('amount').lean();
-    const unreceivedApprovedSum = unreceivedApproved.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const approvedUnreceived = await WalletRequest.find({ user: targetUserId, status: 'approved', type: 'withdrawal', receivedAt: { $exists: false } }).select('amount').lean();
+    const approvedUnreceivedSum = approvedUnreceived.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const approvedTotalWithdrawals = approved.filter(r => r.type === 'withdrawal').reduce((s,r)=> s + (Number(r.amount)||0), 0);
     const netAfterDeductions = totalSales - totalFees;
-    const lockedAmount = pendingWithdrawalsSum + unreceivedApprovedSum;
-    const availableNetForWithdrawal = Math.max(0, netAfterDeductions - lockedAmount);
+    // Funds already fully withdrawn (approved) reduce availability; pending & unreceived additionally lock remainder
+    const lockedAmount = pendingWithdrawalsSum + approvedUnreceivedSum;
+    const availableNetForWithdrawal = Math.max(0, netAfterDeductions - approvedTotalWithdrawals - pendingWithdrawalsSum);
     return res.json({
       balance,
       totalSales,
       totalDeductions: totalFees,
       netAfterDeductions,
       availableNetForWithdrawal,
-      lockedAmount,
+      lockedAmount, // pending + approved not yet received
       requests: { pending: pendingCount, approved: approvedCount, rejected: rejectedCount },
       recent: { sales: recentSales, fees: recentFees, requests: (await WalletRequest.find({ user: targetUserId, type: 'withdrawal' }).sort({ createdAt: -1 }).limit(20).lean()).map(r=>({ id: String(r._id), type: r.type, status: r.status, amount: r.amount, date: r.createdAt, receivedAt: r.receivedAt || null })) },
       serviceBreakdown
