@@ -50,6 +50,7 @@ import { StatusCodes } from 'http-status-codes';
 import mongoose from 'mongoose';
 import Warehouse from '../models/Warehouse.js';
 import Product from '../models/Product.js';
+import InventoryHistory from '../models/InventoryHistory.js';
 
 export const getInventory = asyncHandler(async (req, res) => {
   console.log('getInventory controller called');
@@ -89,6 +90,44 @@ export const getVariantStockSummary = asyncHandler(async (req, res) => {
     { $project: { _id: 0, variantId: '$_id.variantId', quantity: 1 } }
   ]).allowDiskUse(false);
   res.status(StatusCodes.OK).json(results);
+});
+
+// Get inventory transaction history for a product (optionally variant)
+export const getInventoryHistory = asyncHandler(async (req, res) => {
+  const { productId } = req.params;
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || '50'), 10) || 50));
+  const variantId = typeof req.query.variantId === 'string' && /^[0-9a-fA-F]{24}$/.test(req.query.variantId) ? req.query.variantId : null;
+  const filter = { product: productId };
+  if (variantId) filter.variantId = variantId;
+  const cursor = InventoryHistory.find(filter)
+    .sort({ timestamp: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit);
+  const [items, total] = await Promise.all([
+    cursor.lean(),
+    InventoryHistory.countDocuments(filter)
+  ]);
+  res.status(StatusCodes.OK).json({
+    items: items.map(it => ({
+      id: it._id,
+      type: it.type,
+      reason: it.reason,
+      quantity: it.quantity,
+      beforeQuantity: it.beforeQuantity,
+      afterQuantity: it.afterQuantity,
+      delta: it.delta,
+      variantId: it.variantId,
+      size: it.size,
+      color: it.color,
+      user: it.user,
+      timestamp: it.timestamp
+    })),
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit))
+  });
 });
 
 export const updateInventory = asyncHandler(async (req, res) => {
@@ -206,6 +245,9 @@ export const updateInventoryByVariant = asyncHandler(async (req, res) => {
   try {
     // Normalize to ObjectId strings (Mongoose will cast but we keep consistent logs)
     const filter = { product: productId, variantId, warehouse: warehouseId };
+    // Capture previous quantity (if row exists) for history logging
+    let prevRow = null;
+    try { prevRow = await Inventory.findOne(filter).lean(); } catch {}
     // Build $setOnInsert with attributesSnapshot when available to improve display in UI
     let setOnInsert = { product: productId, variantId, warehouse: warehouseId };
     try {
@@ -244,6 +286,26 @@ export const updateInventoryByVariant = asyncHandler(async (req, res) => {
       return res.status(StatusCodes.NOT_FOUND).json({ message: 'Inventory record not found for variant in this warehouse' });
     }
     try { await inventoryService.recomputeProductStock(productId); } catch {}
+    // Create granular history record for variant update
+    try {
+      const beforeQuantity = Number(prevRow?.quantity) || 0;
+      const afterQuantity = Number(inv.quantity) || Number(quantity) || 0;
+      const delta = afterQuantity - beforeQuantity;
+      const type = delta > 0 ? 'increase' : (delta < 0 ? 'decrease' : 'update');
+      await new InventoryHistory({
+        product: inv.product,
+        variantId: inv.variantId,
+        size: inv.size,
+        color: inv.color,
+        type,
+        quantity: afterQuantity,
+        beforeQuantity,
+        afterQuantity,
+        delta,
+        reason: 'Variant manual update',
+        user: req.user?._id
+      }).save();
+    } catch (histErr) { try { console.warn('[inventory][by-variant] history log failed', histErr?.message || histErr); } catch {} }
     return res.status(StatusCodes.OK).json(inv);
   } catch (err) {
     // Handle common cast/validation errors explicitly

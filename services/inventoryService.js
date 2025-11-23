@@ -466,21 +466,28 @@ class InventoryService {
       // Check for low stock alerts
       await this.#checkLowStockAlert(inventory);
 
-      // Determine type for history: 'increase' or 'decrease'
+      // Determine type for history & granular fields
       let type = 'increase';
       if (typeof prevInventory.quantity === 'number' && typeof quantity === 'number') {
-        type = quantity > prevInventory.quantity ? 'increase' : 'decrease';
+        type = quantity > prevInventory.quantity ? 'increase' : (quantity < prevInventory.quantity ? 'decrease' : 'update');
       }
-
-      // Create history record
+      const beforeQuantity = Number(prevInventory.quantity) || 0;
+      const afterQuantity = Number(inventory.quantity) || 0;
+      const delta = afterQuantity - beforeQuantity;
       const historyData = {
         product: inventory.product._id,
+        variantId: inventory.variantId,
+        size: inventory.size,
+        color: inventory.color,
         type,
-        quantity,
+        quantity: quantity,
+        beforeQuantity,
+        afterQuantity,
+        delta,
         reason: 'Manual update',
         user: userId
       };
-      console.log('About to create InventoryHistory with:', historyData);
+      try { console.log('About to create InventoryHistory with:', historyData); } catch {}
       await this.#createHistoryRecord(historyData);
       // Push absolute quantity for the affected SKU to MCG (Uplîcali)
       try {
@@ -585,11 +592,17 @@ class InventoryService {
       // Update product total stock
       await this.#updateProductStock(savedInventory.product);
 
-      // Create history record
+      // Create history record (initial stock)
       await this.#createHistoryRecord({
         product: savedInventory.product,
+        variantId: savedInventory.variantId,
+        size: savedInventory.size,
+        color: savedInventory.color,
         type: 'increase',
         quantity: savedInventory.quantity,
+        beforeQuantity: 0,
+        afterQuantity: savedInventory.quantity,
+        delta: savedInventory.quantity,
         reason: 'Initial stock',
         user: userId
       });
@@ -652,8 +665,14 @@ class InventoryService {
           await this.#checkLowStockAlert(inventory);
           await this.#createHistoryRecord({
             product: inventory.product,
+            variantId: inventory.variantId,
+            size: inventory.size,
+            color: inventory.color,
             type: 'update',
             quantity: item.quantity,
+            beforeQuantity: Number(inventory.quantity), // note: after update we populated inventory
+            afterQuantity: Number(item.quantity),
+            delta: Number(item.quantity) - Number(inventory.quantity),
             reason: 'Bulk update',
             user: userId
           });
@@ -756,7 +775,10 @@ class InventoryService {
 
   async #createHistoryRecord(data) {
     try {
-      console.log('Creating InventoryHistory record with data:', data);
+      // Ensure delta computed if not provided
+      if (data && data.beforeQuantity != null && data.afterQuantity != null && data.delta == null) {
+        data.delta = Number(data.afterQuantity) - Number(data.beforeQuantity);
+      }
       await new InventoryHistory(data).save();
     } catch (error) {
       console.error('Error in #createHistoryRecord:', error);
