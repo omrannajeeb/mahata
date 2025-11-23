@@ -36,7 +36,6 @@ export const updateOrder = async (req, res) => {
 
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
-    const prevStatus = order.status; // capture original for inventory transition logic
 
     // Update customer info fields if provided
     if (ci && typeof ci === 'object') {
@@ -58,9 +57,8 @@ export const updateOrder = async (req, res) => {
       order.shippingAddress = next;
     }
 
-    // Status update (inventory adjustments handled below if changed)
-    const statusChanged = status && typeof status === 'string' && status !== order.status;
-    if (statusChanged) {
+    // Status update
+    if (status && typeof status === 'string' && status !== order.status) {
       order.status = status;
     }
 
@@ -70,57 +68,6 @@ export const updateOrder = async (req, res) => {
     } else if (typeof deliveryFee === 'number' && deliveryFee >= 0) {
       // legacy field
       order.deliveryFee = deliveryFee;
-    }
-
-    // Inventory logic (mirrors updateOrderStatus) when status changes via admin update endpoint
-    if (statusChanged) {
-      // Load inventory configuration
-      let invCfg = null;
-      try { invCfg = (await Settings.findOne())?.inventory || null; } catch {}
-      const hasCfg = invCfg && (Object.prototype.hasOwnProperty.call(invCfg, 'reserveOnCheckout') || Object.prototype.hasOwnProperty.call(invCfg, 'autoDecrementOnOrder'));
-      const decrementedAtOrder = hasCfg ? !!(invCfg?.reserveOnCheckout || invCfg?.autoDecrementOnOrder) : true;
-      const shouldDecrementOnDelivery = !decrementedAtOrder;
-
-      const asInventoryItems = (items) => items.map(it => ({
-        product: it.product,
-        quantity: it.quantity,
-        ...(it.variantId ? { variantId: it.variantId } : { size: it.size, color: it.color })
-      }));
-
-      // Delivered / fulfilled decrement if not previously decremented
-      if ((order.status === 'delivered' || order.status === 'fulfilled') && prevStatus !== order.status && shouldDecrementOnDelivery) {
-        try { await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null); } catch (e) { console.warn('[updateOrder] Delivery decrement failed:', e?.message || e); }
-      }
-
-      // Cancel increment if it was decremented initially and config allows
-      if (order.status === 'cancelled' && prevStatus !== order.status && invCfg?.autoIncrementOnCancel && decrementedAtOrder) {
-        try {
-          await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order cancelled');
-          order.inventoryRestoredOnCancel = true;
-        } catch (e) { console.warn('[updateOrder] Cancel increment failed:', e?.message || e); }
-      }
-
-      // Re-reserve after restore (pending/processing/shipped) if previously restored
-      const reinstatedStatuses = ['pending', 'processing', 'shipped'];
-      if (reinstatedStatuses.includes(order.status) && prevStatus === 'cancelled' && order.inventoryRestoredOnCancel && !order.inventoryReReservedAfterRestore && decrementedAtOrder) {
-        try {
-          await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null);
-          order.inventoryReReservedAfterRestore = true;
-        } catch (e) { console.warn('[updateOrder] Re-reserve after cancel failed:', e?.message || e); }
-      }
-
-      // If order had never been decremented (settings disabled) and we reinstate to pending, decrement once
-      if (order.status === 'pending' && prevStatus === 'cancelled' && !decrementedAtOrder && !order.inventoryReReservedAfterRestore) {
-        try {
-          await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null);
-          order.inventoryReReservedAfterRestore = true;
-        } catch (e) { console.warn('[updateOrder] Pending reactivation decrement failed:', e?.message || e); }
-      }
-
-      // Returned increment
-      if (order.status === 'returned' && prevStatus !== order.status && invCfg?.autoIncrementOnReturn) {
-        try { await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order returned'); } catch (e) { console.warn('[updateOrder] Return increment failed:', e?.message || e); }
-      }
     }
 
     await order.save();
@@ -869,7 +816,9 @@ export const getOrderPublic = async (req, res) => {
 // Update order status
 export const updateOrderStatus = async (req, res) => {
   try {
-    const { status } = req.body;
+    let { status } = req.body;
+    // Normalize spelling for cancelled status (clients may send 'canceled')
+    if (status === 'canceled') status = 'cancelled';
     // Find the order first to check previous status
     const order = await Order.findById(req.params.id);
     if (!order) {
@@ -899,12 +848,18 @@ export const updateOrderStatus = async (req, res) => {
       try { await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null); } catch (e) { console.warn('Delivery decrement failed:', e?.message || e); }
     }
 
-    // Auto-increment on cancel if it was decremented earlier
-    if (status === 'cancelled' && prevStatus !== status && invCfg?.autoIncrementOnCancel && decrementedAtOrder) {
-      try {
-        await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order cancelled');
-        order.inventoryRestoredOnCancel = true;
-      } catch (e) { console.warn('Cancel increment failed:', e?.message || e); }
+    // Auto-increment on cancel if inventory currently reserved.
+    // We allow increment after each genuine reserve cycle (initial or after reinstatement).
+    if (status === 'cancelled' && prevStatus !== 'cancelled' && invCfg?.autoIncrementOnCancel && decrementedAtOrder) {
+      const inventoryCurrentlyReserved = !order.inventoryRestoredOnCancel || (order.inventoryRestoredOnCancel && order.inventoryReReservedAfterRestore);
+      if (inventoryCurrentlyReserved) {
+        try {
+          await inventoryService.incrementItems(asInventoryItems(order.items), req.user?._id || null, 'Order cancelled');
+          order.inventoryRestoredOnCancel = true;
+          // Reset re-reserve flag so future reinstatement can re-reserve again
+          order.inventoryReReservedAfterRestore = false;
+        } catch (e) { console.warn('Cancel increment failed:', e?.message || e); }
+      }
     }
 
     // Re-reserve inventory exactly once if order is reinstated after cancellation
@@ -914,16 +869,6 @@ export const updateOrderStatus = async (req, res) => {
         await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null);
         order.inventoryReReservedAfterRestore = true;
       } catch (e) { console.warn('Re-reserve after cancel failed:', e?.message || e); }
-    }
-
-    // If order was cancelled BEFORE any initial decrement (store configured not to decrement on create),
-    // and we now move it back to pending, we still need to decrement inventory once.
-    // This covers the case where reserveOnCheckout / autoDecrementOnOrder are disabled, so stock was untouched.
-    if (status === 'pending' && prevStatus === 'cancelled' && !decrementedAtOrder && !order.inventoryReReservedAfterRestore) {
-      try {
-        await inventoryService.reserveItems(asInventoryItems(order.items), req.user?._id || null);
-        order.inventoryReReservedAfterRestore = true; // reuse same flag to prevent double decrement
-      } catch (e) { console.warn('Pending reactivation decrement (no initial decrement) failed:', e?.message || e); }
     }
 
     // Auto-increment on returned
